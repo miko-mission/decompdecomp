@@ -36,6 +36,9 @@ MANIFEST = "decompdecomp.json"
 SAVE_FOLDER = "progress"  # in the project's folder, unless the user picks another
 SET_ASIDE_META = ("asm_code", "not_c", "asm_twin")  # why an agent or user set a function aside
 GIT_TIMEOUT = 300
+AUTOSAVE_IDLE_SECONDS = 1  # shortest wait between autosave passes, after one that cost almost nothing
+AUTOSAVE_BUSY_FACTOR = 4  # idle at least this many times the last pass's own cost, so the autosave thread never
+#                           takes more than a small fraction of a core even when a big project's sync runs slow
 log = logging.getLogger("decompdecomp")
 
 
@@ -891,6 +894,15 @@ def _join_saved_layout(net, proj, layout: list[dict], report=None) -> None:
     net._syms.pop(pid, None)
 
 
+def _autosave_wait(elapsed: float) -> float:
+    """Seconds to idle before the next autosave pass: at least AUTOSAVE_IDLE_SECONDS, and enough that a pass's own
+    cost stays a small fraction of a core. A pass stats the save folder and, when work changed, rebuilds the
+    manifest -- on a large project that costs seconds, and a fixed one-second loop would re-run it back-to-back,
+    pegging a core and freezing the app's event loop. Backing off in proportion sweeps such a project less often
+    while small projects still save about every second."""
+    return max(AUTOSAVE_IDLE_SECONDS, elapsed * AUTOSAVE_BUSY_FACTOR)
+
+
 class Autosave:
     """Follow local work and contributions in progress/, including while no project window is open."""
 
@@ -903,8 +915,9 @@ class Autosave:
 
     def _loop(self) -> None:
         while not self.stop.is_set():
+            start = time.monotonic()
             self.run_once()
-            self.stop.wait(1)
+            self.stop.wait(_autosave_wait(time.monotonic() - start))
 
     def run_once(self) -> list[str]:
         """Synchronize every ROM project, including file changes that have no database event."""

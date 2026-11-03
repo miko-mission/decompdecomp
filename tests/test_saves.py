@@ -253,6 +253,46 @@ def test_autosave_saves_what_changed_only(worked):
     assert (saves.default_folder(net, slug) / saves.MANIFEST).exists()
 
 
+def test_autosave_backs_off_in_proportion_to_a_slow_pass():
+    # A pass that costs almost nothing is followed by the floor wait; a pass that cost real time is followed by a
+    # proportionally longer one. On a large project one sync pass (a full-folder stat, or a manifest rebuild) can
+    # cost seconds, and re-running it back-to-back every second pegs a core and freezes the app's event loop.
+    assert saves._autosave_wait(0) == saves.AUTOSAVE_IDLE_SECONDS
+    assert saves._autosave_wait(0.1) == saves.AUTOSAVE_IDLE_SECONDS            # 0.1*factor still under the floor
+    assert saves._autosave_wait(3.0) == 3.0 * saves.AUTOSAVE_BUSY_FACTOR       # a 3s pass backs off to 12s
+    assert saves._autosave_wait(3.0) >= 3.0                                    # never idles less than the work took
+
+
+def test_autosave_loop_waits_proportional_to_how_long_a_pass_took(monkeypatch):
+    # The loop must feed each pass's measured duration through _autosave_wait, not sleep a fixed interval; otherwise
+    # a slow sync runs every second and starves the main thread. Simulate a 3-second pass and capture the wait.
+    auto = saves.Autosave(None)
+    clock = [100.0]
+    monkeypatch.setattr(saves.time, "monotonic", lambda: clock[0])
+
+    def slow_pass():
+        clock[0] += 3.0                                                        # this pass took 3 seconds
+        return []
+
+    auto.run_once = slow_pass
+    waited = []
+
+    class RunOnceThenStop:
+        def __init__(self):
+            self.seen = 0
+
+        def is_set(self):
+            self.seen += 1
+            return self.seen > 1                                               # let the loop body run exactly once
+
+        def wait(self, timeout):
+            waited.append(timeout)
+
+    auto.stop = RunOnceThenStop()
+    auto._loop()
+    assert waited == [saves._autosave_wait(3.0)]
+
+
 def test_a_whole_decomp_folder_copied_elsewhere_keeps_its_projects(tmp_path):
     """Project folders were stored as absolute paths (/home/decomp/Decomp/... inside the old Windows install's WSL):
     a Decomp folder copied to another computer or user name finds its projects again by their names."""
