@@ -216,7 +216,9 @@ class EditMixin:
         with self.store.tx() as db:
             meta = json.loads(db.execute("SELECT meta FROM functions WHERE id=?", (first["id"],)).fetchone()["meta"] or "{}")
             said = meta.setdefault("joins", {}).setdefault(key, {})
-            said[agent.name] = {"model": model_of(agent.name), "why": reason[:2000], "t": time.time()}
+            pulled = getattr(self, "_nudge_pulled", ())
+            nudged = (agent.id, first["id"]) in pulled or (agent.id, last["id"]) in pulled
+            said[agent.name] = {"model": model_of(agent.name), "why": reason[:2000], "t": time.time(), "nudged": nudged}
             meta["vote_models"] = sorted({v["model"] for votes in meta["joins"].values() for v in votes.values()})
             _nudge_log(f"VOTE model={model_of(agent.name)} agent={agent.name} head={first['name']} "
                        f"tail={last['name']} models_now={','.join(meta['vote_models'])}")
@@ -274,6 +276,14 @@ class EditMixin:
             self._xrefs.pop(pid, None)
         if hasattr(self, "_ops"):
             self._ops.pop(pid, None)
+        voters = (json.loads(self.store.one("SELECT meta FROM functions WHERE id=?", first["id"])["meta"] or "{}")
+                  .get("joins", {}).get(key, {}))
+        vmodels = {v["model"] for v in voters.values()}
+        nmodels = {v["model"] for v in voters.values() if v.get("nudged")}
+        by_nudge = len(vmodels) >= NOT_C_MODELS and len(vmodels - nmodels) < NOT_C_MODELS
+        _nudge_log(f"JOINED head={first['name']} tails={', '.join(t['name'] for t in tails)} "
+                   f"models={','.join(sorted(vmodels))} nudged_models={','.join(sorted(nmodels)) or '-'} "
+                   f"by_nudge={'yes' if by_nudge else 'no'}")
         tail_names = ", ".join(t["name"] for t in tails)
         return (f"✅ joined: {tail_names} {'is' if len(tails) == 1 else 'are'} part of {first['name']} now "
                 f"({console.function_insns(joined)} instructions, {joined.size} bytes). Continue with "

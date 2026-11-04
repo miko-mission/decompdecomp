@@ -203,3 +203,20 @@ def test_second_opinion_falls_back_when_the_queue_is_empty(net, monkeypatch):
     aa2, _ = net.local_agent("aa-2")                                          # same model, empty queue
     out = net.claim(aa2, SLUG, strategy="second_opinion")
     assert "CLAIMED" in out                                                   # fell back to a normal claim
+
+
+def test_vote_tagged_nudged_after_a_queue_pull(net, monkeypatch):
+    # A vote is tagged nudged only when the agent pulled that function from the second-opinion queue.
+    import json as _json
+    import decompnet.network as network
+    monkeypatch.setattr(network, "VOTE_NUDGE", True)
+    agent, _ = net.local_agent("tester")
+    net.split_function(agent, SLUG, FN, "0x800007D0")
+    aa, _ = net.local_agent("aa-1")
+    net.join_functions(aa, SLUG, FN, TAIL, "no prologue; runs straight in")   # model 'aa', no pull -> not nudged
+    bb, _ = net.local_agent("bb-1")
+    net.claim(bb, SLUG, strategy="second_opinion")                            # bb pulls FN from the queue
+    net.join_functions(bb, SLUG, FN, TAIL, "no prologue; runs straight in")   # bb votes -> nudged
+    votes = _json.loads(net._function(FN, SLUG)["meta"])["joins"][f"{FN}+{TAIL}"]
+    assert votes["aa-1"]["nudged"] is False
+    assert votes["bb-1"]["nudged"] is True

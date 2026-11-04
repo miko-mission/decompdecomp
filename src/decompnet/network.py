@@ -828,6 +828,11 @@ class Network:
                 if VOTE_NUDGE and fn["id"] in nudge_ids:
                     _nudge_log(f"{'QUEUE_PULL' if vote_only else 'FIRED'} model={model_of(agent.name)} "
                                f"agent={agent.name} fn={fn['name']}")
+                    if vote_only:
+                        pulled = getattr(self, "_nudge_pulled", None)
+                        if pulled is None:
+                            pulled = self._nudge_pulled = set()
+                        pulled.add((agent.id, fn["id"]))
             # a wait that's over has had its turn at the front once it's claimed
             db.execute("DELETE FROM waits WHERE function_id=? AND needs_id IN (SELECT id FROM functions "
                        "WHERE status='matched')", (fn["id"],))
