@@ -158,3 +158,24 @@ def test_vote_nudge_is_off_without_the_flag(net):
     # nudge never fires unless DECOMP_VOTE_NUDGE is set. (The flag gates only claim_row; _vote_needs_model is pure.)
     import decompnet.network as network
     assert network.VOTE_NUDGE is False
+
+
+def test_vote_nudge_cap_cools_off_a_non_converging_join(net):
+    # The cap: once VOTE_NUDGE_CAP distinct fresh models have claimed a short join without corroborating, stop
+    # routing more scarce models to it (the fixation the live watch showed).
+    import time as _time
+    from decompnet.network import VOTE_NUDGE_CAP
+    agent, _ = net.local_agent("tester")
+    net.split_function(agent, SLUG, FN, "0x800007D0")
+    ag, _ = net.local_agent("aa-1")
+    net.join_functions(ag, SLUG, FN, TAIL, "no prologue; runs straight in")   # sub-quorum, model 'aa'
+    pid = net._function(FN, SLUG)["project_id"]
+    fn_id = net._function(FN, SLUG)["id"]
+    assert fn_id in net._vote_needs_model(pid, "dd")                           # nudged before the cap
+    fresh = [f"m{i}-1" for i in range(VOTE_NUDGE_CAP)]                         # that many distinct fresh models look
+    with net.store.tx() as db:
+        for nm in fresh:
+            a, _ = net.local_agent(nm)
+            db.execute("INSERT INTO events(project_id, agent_id, kind, detail, created_at) VALUES(?,?,'claim',?,?)",
+                       (pid, a.id, "func_800007C4", _time.time()))
+    assert fn_id not in net._vote_needs_model(pid, "dd")                       # cooled off: no longer nudged

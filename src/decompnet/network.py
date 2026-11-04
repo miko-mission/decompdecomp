@@ -83,6 +83,7 @@ NOT_C_AGENTS, NOT_C_MODELS = 3, 2
 # VOTE_NUDGE (prototype, off unless DECOMP_VOTE_NUDGE is set): route a fresh-model agent to a function whose
 # pending join vote is short a model, instead of waiting for a random different-model agent to reach the quorum.
 VOTE_NUDGE = bool(os.environ.get("DECOMP_VOTE_NUDGE"))
+VOTE_NUDGE_CAP = 2  # stop nudging a short join after this many distinct fresh models claim it without voting
 # The same verdict in agents' notes, from before release_function took one (Network.not_c_from_notes): words that say
 # no C at all makes the code. Not a note about compiler flags: "flag-blocked" code may match with other flags.
 # On every project of a user (October 2026) no function later matched had three agents' notes saying so.
@@ -675,18 +676,38 @@ class Network:
                          f"To take one now, call claim_function with function=\"{names[0]}\".")
         return "\n".join(lines)
 
+    def _backfill_vote_models(self, db, pid: int) -> None:
+        """One-time per project per run: stamp vote_models on joins voted before VOTE_NUDGE existed, so the nudge
+        sees the whole pending backlog and not only votes cast since the restart. Runs in the caller's transaction,
+        so it never races the app's own meta writes."""
+        for r in db.execute("SELECT id, meta FROM functions WHERE project_id=? AND meta LIKE '%\"joins\"%' "
+                            "AND meta NOT LIKE '%vote_models%'", (pid,)).fetchall():
+            meta = json.loads(r["meta"] or "{}")
+            models = sorted({v["model"] for votes in meta.get("joins", {}).values() for v in votes.values()})
+            if models:
+                meta["vote_models"] = models
+                db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+
     def _vote_needs_model(self, pid: int, model: str) -> list[int]:
-        """VOTE_NUDGE prototype: open functions with a pending consensus (join) vote short of NOT_C_MODELS
-        models that `model` has not cast yet. Routing a fresh-model agent to one gets the second opinion the
-        quorum needs, instead of waiting for a random different-model agent to wander onto it. Routing only --
-        the vote's direction is never revealed, so the agent judges the function afresh and the gate stays
-        independent."""
+        """VOTE_NUDGE prototype: open functions with a pending consensus (join) vote short of NOT_C_MODELS models
+        that `model` has not cast yet -- route a fresh-model agent there for the second opinion the quorum needs,
+        instead of waiting for a random different-model agent to wander onto it. Routing only (the vote's direction
+        is never revealed, so the gate stays independent), and capped: once VOTE_NUDGE_CAP distinct fresh models
+        have claimed a function without corroborating, stop re-sending scarce models to a non-converging one."""
         ids: list[int] = []
-        for r in self.store.all("SELECT id, meta FROM functions WHERE project_id=? AND status='open' "
+        for r in self.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND status='open' "
                                 "AND meta LIKE '%vote_models%'", pid):
-            models = (json.loads(r["meta"] or "{}")).get("vote_models") or []
-            if 0 < len(set(models)) < NOT_C_MODELS and model not in models:
-                ids.append(r["id"])
+            meta = json.loads(r["meta"] or "{}")
+            models = meta.get("vote_models") or []
+            if not (0 < len(set(models)) < NOT_C_MODELS and model not in models):
+                continue
+            earliest = min((v["t"] for votes in meta.get("joins", {}).values() for v in votes.values()), default=0)
+            claimed = self.store.all("SELECT DISTINCT ag.name FROM events e JOIN agents ag ON ag.id=e.agent_id "
+                                     "WHERE e.project_id=? AND e.kind='claim' AND e.detail=? AND e.created_at>=?",
+                                     pid, r["name"], earliest)
+            if len({model_of(c["name"]) for c in claimed} - set(models)) >= VOTE_NUDGE_CAP:
+                continue  # enough fresh models have looked without voting; don't keep burning them on it
+            ids.append(r["id"])
         return ids
 
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None,
@@ -724,6 +745,13 @@ class Network:
                 route = self._route(db, proj["id"], agent, now)
                 family = model_family(agent.name)
                 kin = [r["id"] for r in db.execute("SELECT id, name FROM agents") if model_family(r["name"]) == family]
+                if VOTE_NUDGE:
+                    done = getattr(self, "_nudge_backfilled", None)
+                    if done is None:
+                        done = self._nudge_backfilled = set()
+                    if proj["id"] not in done:
+                        self._backfill_vote_models(db, proj["id"])
+                        done.add(proj["id"])
                 nudge_ids = self._vote_needs_model(proj["id"], model_of(agent.name)) if VOTE_NUDGE else []
                 tried = db.execute("SELECT SUM(status = 'matched') AS won, SUM(status = 'matched' OR attempts > 0) "
                                    "AS tried FROM functions WHERE project_id=? AND status != 'asm'", (proj["id"],)).fetchone()
