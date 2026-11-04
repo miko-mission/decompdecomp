@@ -1104,9 +1104,11 @@ class Manager:
             try:  # (prototype) surface functions that need this model's second opinion so it self-selects one
                 names = self.net._vote_nudge_names(self.net._project(s.slug)["id"], network.model_of(s.agent_name))
                 if names:
-                    text += ("\nA second model's look would help here: these functions may be over-split (the "
-                             "analysis cut one function in two). If one fits your next claim, take it and decide "
-                             "for yourself whether its pieces are really one function. Candidates: "
+                    text += (f"\nSecond-opinion queue ({len(names)} waiting): these functions may be over-split "
+                             "and need your model's independent look before the pieces can be rejoined. Before "
+                             "other work, claim one with claim_function(strategy=\"second_opinion\") (it pulls "
+                             "the next from this queue), then decide for yourself whether its pieces are really "
+                             "one function -- if they are not, say so and move on. In the queue now: "
                              + ", ".join(names) + "\n")
                     network._nudge_log(f"SUGGESTED model={network.model_of(s.agent_name)} agent={s.agent_name} "
                                        f"n={len(names)} fns={','.join(names)}")

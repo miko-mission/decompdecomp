@@ -179,3 +179,27 @@ def test_vote_nudge_cap_cools_off_a_non_converging_join(net):
             db.execute("INSERT INTO events(project_id, agent_id, kind, detail, created_at) VALUES(?,?,'claim',?,?)",
                        (pid, a.id, "func_800007C4", _time.time()))
     assert fn_id not in net._vote_needs_model(pid, "dd")                       # cooled off: no longer nudged
+
+
+def test_second_opinion_strategy_pulls_from_the_queue(net, monkeypatch):
+    import decompnet.network as network
+    monkeypatch.setattr(network, "VOTE_NUDGE", True)
+    agent, _ = net.local_agent("tester")
+    net.split_function(agent, SLUG, FN, "0x800007D0")
+    ag, _ = net.local_agent("aa-1")
+    net.join_functions(ag, SLUG, FN, TAIL, "no prologue; runs straight in")   # sub-quorum, model 'aa'
+    bb, _ = net.local_agent("bb-1")
+    assert "func_800007C4" in net.claim(bb, SLUG, strategy="second_opinion")  # pulled the short-vote head
+
+
+def test_second_opinion_falls_back_when_the_queue_is_empty(net, monkeypatch):
+    # The voter's own model has an empty queue (it already voted); second_opinion must still hand it work, not fail.
+    import decompnet.network as network
+    monkeypatch.setattr(network, "VOTE_NUDGE", True)
+    agent, _ = net.local_agent("tester")
+    net.split_function(agent, SLUG, FN, "0x800007D0")
+    ag, _ = net.local_agent("aa-1")
+    net.join_functions(ag, SLUG, FN, TAIL, "no prologue; runs straight in")   # model 'aa' now in vote_models
+    aa2, _ = net.local_agent("aa-2")                                          # same model, empty queue
+    out = net.claim(aa2, SLUG, strategy="second_opinion")
+    assert "CLAIMED" in out                                                   # fell back to a normal claim

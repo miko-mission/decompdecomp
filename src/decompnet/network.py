@@ -181,6 +181,7 @@ STRATEGIES = {
     "hardest": "f.n_insns DESC",
     "random": "RANDOM()",
 }
+STRATEGIES["second_opinion"] = STRATEGIES["easiest"]  # VOTE_NUDGE: pull from the second-opinion queue
 
 
 class NetworkError(Exception):
@@ -784,6 +785,7 @@ class Network:
                         _nudge_log(f"BACKFILL pid={proj['id']} stamped={self._backfill_vote_models(db, proj['id'])}")
                         done.add(proj["id"])
                 nudge_ids = self._vote_needs_model(proj["id"], model_of(agent.name)) if VOTE_NUDGE else []
+                vote_only = 1 if strategy == "second_opinion" else 0  # restrict the pick to the queue
                 tried = db.execute("SELECT SUM(status = 'matched') AS won, SUM(status = 'matched' OR attempts > 0) "
                                    "AS tried FROM functions WHERE project_id=? AND status != 'asm'", (proj["id"],)).fetchone()
                 overall = (tried["won"] or 0) / tried["tried"] if tried["tried"] else 0.5
@@ -796,6 +798,7 @@ class Network:
                         AND f.id NOT IN (SELECT function_id FROM claims)
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                            AND kind='release' AND created_at > :mine)
+                        AND (:vote_only = 0 OR f.id IN (SELECT value FROM json_each(:nudge_ids)))
                         ORDER BY f.id IN ({WAITING}),
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND agent_id=:agent
                                             AND kind='release'),
@@ -812,16 +815,19 @@ class Network:
                 args = {"pid": proj["id"], "agent": agent.id, "kin": json.dumps(kin), "cooled": now - RELEASE_COOLDOWN,
                         "overall": overall, "escalate": escalate, "weak": route == "weak", "strong": route == "strong",
                         "mine": self._own_release_cutoff(db, agent.id, now),
-                        "nudge_ids": json.dumps(nudge_ids)}
+                        "nudge_ids": json.dumps(nudge_ids), "vote_only": vote_only}
                 fn = db.execute(query, args).fetchone()
                 if fn is None and route == "weak":  # only what stronger models are for is left: better tried than idle
                     fn = db.execute(query, args | {"weak": False}).fetchone()
+                if fn is None and vote_only:  # the second-opinion queue emptied since the prompt: claim normally
+                    fn = db.execute(query, args | {"vote_only": 0}).fetchone()
                 if fn is None:
                     return None
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
                 if VOTE_NUDGE and fn["id"] in nudge_ids:
-                    _nudge_log(f"FIRED model={model_of(agent.name)} agent={agent.name} fn={fn['name']}")
+                    _nudge_log(f"{'QUEUE_PULL' if vote_only else 'FIRED'} model={model_of(agent.name)} "
+                               f"agent={agent.name} fn={fn['name']}")
             # a wait that's over has had its turn at the front once it's claimed
             db.execute("DELETE FROM waits WHERE function_id=? AND needs_id IN (SELECT id FROM functions "
                        "WHERE status='matched')", (fn["id"],))
