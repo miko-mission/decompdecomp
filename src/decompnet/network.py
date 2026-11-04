@@ -84,6 +84,20 @@ NOT_C_AGENTS, NOT_C_MODELS = 3, 2
 # pending join vote is short a model, instead of waiting for a random different-model agent to reach the quorum.
 VOTE_NUDGE = bool(os.environ.get("DECOMP_VOTE_NUDGE"))
 VOTE_NUDGE_CAP = 2  # stop nudging a short join after this many distinct fresh models claim it without voting
+VOTE_NUDGE_LOG = os.environ.get("DECOMP_VOTE_NUDGE_LOG") or os.path.expanduser("~/Decomp/.decomp/logs/vote_nudge.log")
+_CAPPED_SEEN: set = set()  # fn names already logged as cooled off, to keep the evidence log readable
+
+
+def _nudge_log(msg: str) -> None:
+    """Append one line to our own VOTE_NUDGE evidence log -- first-party proof of what the nudge did, apart
+    from the app log. Only when the flag is on, and never raises (evidence must not break a claim)."""
+    if not VOTE_NUDGE:
+        return
+    try:
+        with open(VOTE_NUDGE_LOG, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 # The same verdict in agents' notes, from before release_function took one (Network.not_c_from_notes): words that say
 # no C at all makes the code. Not a note about compiler flags: "flag-blocked" code may match with other flags.
 # On every project of a user (October 2026) no function later matched had three agents' notes saying so.
@@ -676,10 +690,11 @@ class Network:
                          f"To take one now, call claim_function with function=\"{names[0]}\".")
         return "\n".join(lines)
 
-    def _backfill_vote_models(self, db, pid: int) -> None:
+    def _backfill_vote_models(self, db, pid: int) -> int:
         """One-time per project per run: stamp vote_models on joins voted before VOTE_NUDGE existed, so the nudge
         sees the whole pending backlog and not only votes cast since the restart. Runs in the caller's transaction,
         so it never races the app's own meta writes."""
+        n = 0
         for r in db.execute("SELECT id, meta FROM functions WHERE project_id=? AND meta LIKE '%\"joins\"%' "
                             "AND meta NOT LIKE '%vote_models%'", (pid,)).fetchall():
             meta = json.loads(r["meta"] or "{}")
@@ -687,6 +702,8 @@ class Network:
             if models:
                 meta["vote_models"] = models
                 db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), r["id"]))
+                n += 1
+        return n
 
     def _vote_needs_model(self, pid: int, model: str) -> list[int]:
         """VOTE_NUDGE prototype: open functions with a pending consensus (join) vote short of NOT_C_MODELS models
@@ -705,7 +722,11 @@ class Network:
             claimed = self.store.all("SELECT DISTINCT ag.name FROM events e JOIN agents ag ON ag.id=e.agent_id "
                                      "WHERE e.project_id=? AND e.kind='claim' AND e.detail=? AND e.created_at>=?",
                                      pid, r["name"], earliest)
-            if len({model_of(c["name"]) for c in claimed} - set(models)) >= VOTE_NUDGE_CAP:
+            fresh = {model_of(c["name"]) for c in claimed} - set(models)
+            if len(fresh) >= VOTE_NUDGE_CAP:
+                if r["name"] not in _CAPPED_SEEN:
+                    _CAPPED_SEEN.add(r["name"])
+                    _nudge_log(f"CAP fn={r['name']} looked={len(fresh)} voters={','.join(models)}")
                 continue  # enough fresh models have looked without voting; don't keep burning them on it
             ids.append(r["id"])
         return ids
@@ -750,7 +771,7 @@ class Network:
                     if done is None:
                         done = self._nudge_backfilled = set()
                     if proj["id"] not in done:
-                        self._backfill_vote_models(db, proj["id"])
+                        _nudge_log(f"BACKFILL pid={proj['id']} stamped={self._backfill_vote_models(db, proj['id'])}")
                         done.add(proj["id"])
                 nudge_ids = self._vote_needs_model(proj["id"], model_of(agent.name)) if VOTE_NUDGE else []
                 tried = db.execute("SELECT SUM(status = 'matched') AS won, SUM(status = 'matched' OR attempts > 0) "
@@ -789,6 +810,8 @@ class Network:
                     return None
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+                if VOTE_NUDGE and fn["id"] in nudge_ids:
+                    _nudge_log(f"FIRED model={model_of(agent.name)} agent={agent.name} fn={fn['name']}")
             # a wait that's over has had its turn at the front once it's claimed
             db.execute("DELETE FROM waits WHERE function_id=? AND needs_id IN (SELECT id FROM functions "
                        "WHERE status='matched')", (fn["id"],))

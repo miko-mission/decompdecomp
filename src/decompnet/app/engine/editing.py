@@ -9,7 +9,7 @@ import re
 import time
 
 from ... import arch
-from ...network import NOT_C_AGENTS, NOT_C_MODELS, Agent, NetworkError, model_of
+from ...network import NOT_C_AGENTS, NOT_C_MODELS, Agent, NetworkError, _nudge_log, model_of
 from ...rom.symbols import IDENT, Symbol, SymbolTable
 from .common import _ADDRESS
 
@@ -218,6 +218,8 @@ class EditMixin:
             said = meta.setdefault("joins", {}).setdefault(key, {})
             said[agent.name] = {"model": model_of(agent.name), "why": reason[:2000], "t": time.time()}
             meta["vote_models"] = sorted({v["model"] for votes in meta["joins"].values() for v in votes.values()})
+            _nudge_log(f"VOTE model={model_of(agent.name)} agent={agent.name} head={first['name']} "
+                       f"tail={last['name']} models_now={','.join(meta['vote_models'])}")
             db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), first["id"]))
             self._event(db, proj["id"], agent.id, "merge", f"{first['name']} + {last['name']}: {reason[:200]}")
         models = {v["model"] for v in said.values()}
