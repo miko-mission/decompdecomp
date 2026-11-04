@@ -10,6 +10,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
@@ -79,6 +80,9 @@ MACHINE_AGENTS = ("autopilot", "permuter")  # decompdecomp's own workers: their 
 # of this many models (one model's blind spot isn't proof), say so, it's set aside: no one is handed it again, and
 # the user can give it back (reopen).
 NOT_C_AGENTS, NOT_C_MODELS = 3, 2
+# VOTE_NUDGE (prototype, off unless DECOMP_VOTE_NUDGE is set): route a fresh-model agent to a function whose
+# pending join vote is short a model, instead of waiting for a random different-model agent to reach the quorum.
+VOTE_NUDGE = bool(os.environ.get("DECOMP_VOTE_NUDGE"))
 # The same verdict in agents' notes, from before release_function took one (Network.not_c_from_notes): words that say
 # no C at all makes the code. Not a note about compiler flags: "flag-blocked" code may match with other flags.
 # On every project of a user (October 2026) no function later matched had three agents' notes saying so.
@@ -671,6 +675,20 @@ class Network:
                          f"To take one now, call claim_function with function=\"{names[0]}\".")
         return "\n".join(lines)
 
+    def _vote_needs_model(self, pid: int, model: str) -> list[int]:
+        """VOTE_NUDGE prototype: open functions with a pending consensus (join) vote short of NOT_C_MODELS
+        models that `model` has not cast yet. Routing a fresh-model agent to one gets the second opinion the
+        quorum needs, instead of waiting for a random different-model agent to wander onto it. Routing only --
+        the vote's direction is never revealed, so the agent judges the function afresh and the gate stays
+        independent."""
+        ids: list[int] = []
+        for r in self.store.all("SELECT id, meta FROM functions WHERE project_id=? AND status='open' "
+                                "AND meta LIKE '%vote_models%'", pid):
+            models = (json.loads(r["meta"] or "{}")).get("vote_models") or []
+            if 0 < len(set(models)) < NOT_C_MODELS and model not in models:
+                ids.append(r["id"])
+        return ids
+
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None,
                   strategy: str = "easiest"):
         """Claim (or renew) a function and return its row, or None when nothing is left."""
@@ -706,6 +724,7 @@ class Network:
                 route = self._route(db, proj["id"], agent, now)
                 family = model_family(agent.name)
                 kin = [r["id"] for r in db.execute("SELECT id, name FROM agents") if model_family(r["name"]) == family]
+                nudge_ids = self._vote_needs_model(proj["id"], model_of(agent.name)) if VOTE_NUDGE else []
                 tried = db.execute("SELECT SUM(status = 'matched') AS won, SUM(status = 'matched' OR attempts > 0) "
                                    "AS tried FROM functions WHERE project_id=? AND status != 'asm'", (proj["id"],)).fetchone()
                 overall = (tried["won"] or 0) / tried["tried"] if tried["tried"] else 0.5
@@ -727,12 +746,14 @@ class Network:
                                                       AND kind IN ('context', 'compiler')), 0)),
                                  f.name IN (SELECT detail FROM events WHERE project_id=:pid AND kind='release'
                                             AND created_at > :cooled),
+                                 f.id IN (SELECT value FROM json_each(:nudge_ids)) DESC,
                                  f.id IN ({READY}) DESC, f.id IN ({WANTED}) DESC,
                                  :strong AND f.abandons >= :escalate DESC, {STRATEGIES[strategy]} LIMIT 1""")
                 escalate = self._escalation(db, proj["id"]) if route else ESCALATE_AFTER
                 args = {"pid": proj["id"], "agent": agent.id, "kin": json.dumps(kin), "cooled": now - RELEASE_COOLDOWN,
                         "overall": overall, "escalate": escalate, "weak": route == "weak", "strong": route == "strong",
-                        "mine": self._own_release_cutoff(db, agent.id, now)}
+                        "mine": self._own_release_cutoff(db, agent.id, now),
+                        "nudge_ids": json.dumps(nudge_ids)}
                 fn = db.execute(query, args).fetchone()
                 if fn is None and route == "weak":  # only what stronger models are for is left: better tried than idle
                     fn = db.execute(query, args | {"weak": False}).fetchone()

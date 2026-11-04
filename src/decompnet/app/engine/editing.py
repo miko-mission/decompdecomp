@@ -217,6 +217,7 @@ class EditMixin:
             meta = json.loads(db.execute("SELECT meta FROM functions WHERE id=?", (first["id"],)).fetchone()["meta"] or "{}")
             said = meta.setdefault("joins", {}).setdefault(key, {})
             said[agent.name] = {"model": model_of(agent.name), "why": reason[:2000], "t": time.time()}
+            meta["vote_models"] = sorted({v["model"] for votes in meta["joins"].values() for v in votes.values()})
             db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), first["id"]))
             self._event(db, proj["id"], agent.id, "merge", f"{first['name']} + {last['name']}: {reason[:200]}")
         models = {v["model"] for v in said.values()}

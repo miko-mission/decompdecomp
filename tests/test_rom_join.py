@@ -126,3 +126,35 @@ def test_join_selects_by_rom_run_not_the_shared_vram_window(net):
     assert net.store.one("SELECT 1 FROM functions WHERE project_id=? AND name=?", pid, TAIL) is None
     alias = net.store.one("SELECT status FROM functions WHERE project_id=? AND name=?", pid, "alias_head")
     assert alias is not None and alias["status"] == "matched"     # the aliased copy was NOT swept into the merge
+
+
+def test_vote_nudge_targets_a_fresh_model_for_a_one_model_join(net):
+    # VOTE_NUDGE prototype: a sub-quorum join vote (one model) marks the head; the selector routes a different-model
+    # agent to it and skips the model that already voted -- the quorum's second opinion without a random assignment.
+    agent, _ = net.local_agent("tester")
+    net.split_function(agent, SLUG, FN, "0x800007D0")
+    ag, _ = net.local_agent("aa-1")
+    assert "counted" in net.join_functions(ag, SLUG, FN, TAIL, "no prologue; runs straight in").lower()
+    pid = net._function(FN, SLUG)["project_id"]
+    fn_id = net._function(FN, SLUG)["id"]
+    assert fn_id in net._vote_needs_model(pid, "bb")       # a model not yet among the voters is routed here
+    assert fn_id not in net._vote_needs_model(pid, "aa")   # the model that already voted is not
+
+
+def test_vote_nudge_flag_floats_the_pending_vote_in_a_claim(net, monkeypatch):
+    # With the flag on, a fresh-model agent claiming (no function named) is routed to the pending-vote head.
+    import decompnet.network as network
+    monkeypatch.setattr(network, "VOTE_NUDGE", True)
+    agent, _ = net.local_agent("tester")
+    net.split_function(agent, SLUG, FN, "0x800007D0")
+    ag, _ = net.local_agent("aa-1")
+    net.join_functions(ag, SLUG, FN, TAIL, "no prologue; runs straight in")   # sub-quorum, model 'aa'
+    bb, _ = net.local_agent("bb-1")                                           # a model not among the voters
+    assert "func_800007C4" in net.claim(bb, SLUG)                            # floated to the pending-vote head
+
+
+def test_vote_nudge_is_off_without_the_flag(net):
+    # Off by default: the selector still marks the head (harmless metadata), but claim ordering is unchanged, so the
+    # nudge never fires unless DECOMP_VOTE_NUDGE is set. (The flag gates only claim_row; _vote_needs_model is pure.)
+    import decompnet.network as network
+    assert network.VOTE_NUDGE is False
