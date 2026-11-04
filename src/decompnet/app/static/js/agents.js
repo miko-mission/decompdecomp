@@ -646,7 +646,11 @@ function eventHtml(ev) {
     case "context": return `${who} updated ${ev.agent ? "shared code" : "context"}: ${esc(d)}`;
     case "source": return `${who} updated ${esc(d)}`;
     case "rename": return `${who} renamed ${esc(d)}`;
-    case "split": return `${who} split ${esc(d)}`;
+    // "<prev> / <new_name>" — both functions exist after the split; link each so the log is clickable.
+    case "split": { const [a, b] = d.split(" / "); return `${who} split ${fnLink((a || "").trim())}${b ? " / " + fnLink(b.trim()) : ""}`; }
+    // "<head> + <tail(s)>: joined|<reason>" — during a vote both pieces still exist, so link the head and
+    // each tail (an absorbed tail after a completed join just opens an empty drawer). Reason after ": " is kept.
+    case "merge": { const ci = d.indexOf(": "), pair = ci < 0 ? d : d.slice(0, ci), rest = ci < 0 ? "" : d.slice(ci), [head, tp] = pair.split(" + "), tails = (tp || "").split(",").map((s) => s.trim()).filter(Boolean); return `<span class="ok">⊕</span> ${who}: ${fnLink((head || "").trim())}${tails.length ? " + " + tails.map(fnLink).join(", ") : ""}${esc(rest)}`; }
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
