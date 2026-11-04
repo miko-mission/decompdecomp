@@ -1100,6 +1100,18 @@ class Manager:
             text += f"\n{known}\n"
         if (wish := self.net.instructions(s.slug)):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
+        if network.VOTE_NUDGE:
+            try:  # (prototype) surface functions that need this model's second opinion so it self-selects one
+                names = self.net._vote_nudge_names(self.net._project(s.slug)["id"], network.model_of(s.agent_name))
+                if names:
+                    text += ("\nA second model's look would help here: these functions may be over-split (the "
+                             "analysis cut one function in two). If one fits your next claim, take it and decide "
+                             "for yourself whether its pieces are really one function. Candidates: "
+                             + ", ".join(names) + "\n")
+                    network._nudge_log(f"SUGGESTED model={network.model_of(s.agent_name)} agent={s.agent_name} "
+                                       f"n={len(names)} fns={','.join(names)}")
+            except Exception:
+                pass
         return text
 
     def _prompt(self, s: Session) -> str:

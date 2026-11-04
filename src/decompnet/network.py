@@ -731,6 +731,16 @@ class Network:
             ids.append(r["id"])
         return ids
 
+    def _vote_nudge_names(self, pid: int, model: str, limit: int = 6) -> list[str]:
+        """VOTE_NUDGE (prototype): up to `limit` function names that need `model`'s second opinion on a possible
+        join, to surface in a fresh-model helper's prompt (agents.py) so it self-selects one. Reuses
+        _vote_needs_model (cap included); routing only -- the prompt never says which way the vote leans."""
+        ids = self._vote_needs_model(pid, model)[:limit]
+        if not ids:
+            return []
+        q = ",".join("?" * len(ids))
+        return [r["name"] for r in self.store.all(f"SELECT name FROM functions WHERE id IN ({q})", *ids)]
+
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None,
                   strategy: str = "easiest"):
         """Claim (or renew) a function and return its row, or None when nothing is left."""
