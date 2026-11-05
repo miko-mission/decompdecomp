@@ -230,3 +230,24 @@ def test_boundary_reports_wait_for_the_user(net):
     [req] = [r for r in net.overview(slug)["boundaries"] if r["function"] == other["name"]]
     net.resolve_boundary(slug, req["id"], apply=False)
     assert net.store.one("SELECT size FROM functions WHERE id=?", other["id"])["size"] == other["size"]
+
+
+def test_overview_vote_model_warning(net):  # noqa: F811
+    import time as _t
+    slug = "demo-quest-64"
+    pid = net._project(slug)["id"]
+    with net.store.tx() as db:  # age out earlier tests' activity so the vote-model window starts clean (last test)
+        db.execute("UPDATE events SET created_at = created_at - 1000000 WHERE project_id=?", (pid,))
+
+    def active(name):
+        ag, _ = net.local_agent(name)
+        with net.store.tx() as db:
+            db.execute("INSERT INTO events(project_id, agent_id, kind, detail, created_at) VALUES(?,?,'claim','f',?)",
+                       (pid, ag.id, _t.time()))
+
+    active("codex-gpt-6-luna-1")                       # one model running
+    vm = net.overview(slug)["vote_models"]
+    assert vm["required"] == 2 and "codex-gpt-6-luna" in vm["present"] and vm["enough"] is False
+    active("claude-haiku-5-5-1")                        # a second, distinct model
+    vm = net.overview(slug)["vote_models"]
+    assert vm["enough"] is True and {"codex-gpt-6-luna", "claude-haiku-5-5"} <= set(vm["present"])

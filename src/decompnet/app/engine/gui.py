@@ -12,10 +12,11 @@ import time
 from pathlib import Path
 
 from ... import compilermap, consoles, scoring, toolchains
-from ...network import IN_BUILD, PROGRESS_COLUMNS, set_aside
+from ...network import IN_BUILD, NOT_C_MODELS, PROGRESS_COLUMNS, model_of, set_aside
 from ...project import compiler_for
 
 # What the notification centre tells: news a person wants to hear about, not every claim and attempt agents make.
+VOTE_MODEL_WINDOW = 900  # a model counts as "running for votes" if an agent of it did something in this many seconds
 NOTIFY_KINDS = ("match", "link", "autopilot", "compiler", "reopen", "not_c", "knowledge", "collab", "import", "reimport", "files",
                 "paused", "stopped")
 EVENTS_PER_ASK = 200  # events the notification centre gets per ask (it asks again for more)
@@ -44,6 +45,16 @@ class GuiMixin:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         return res
 
+    def _vote_model_warning(self, pid: int) -> dict:
+        """Operator banner: distinct models among helper agents active lately vs what a consensus vote needs.
+        A merge/not_c/boundary/compiler vote needs NOT_C_MODELS distinct models; with fewer running it can never
+        reach quorum however many agents agree, so the operator is told to add a different model."""
+        cut = time.time() - VOTE_MODEL_WINDOW
+        present = sorted({model_of(r["name"]) for r in self.store.all(
+            "SELECT DISTINCT a.name FROM events e JOIN agents a ON a.id=e.agent_id WHERE e.project_id=? "
+            "AND e.created_at>=? AND a.origin='local' AND a.name NOT IN ('you','autopilot')", pid, cut)})
+        return {"present": present, "required": NOT_C_MODELS, "enough": len(present) >= NOT_C_MODELS}
+
     def overview(self, slug: str) -> dict:
         proj = self._project(slug)
         last = self.store.one("SELECT MAX(created_at) AS t FROM events WHERE project_id=?", proj["id"])["t"]
@@ -68,7 +79,8 @@ class GuiMixin:
                        "boundaries": [r for r in cfg.get("boundaries", []) if r["status"] == "open"],
                        # (a fork whose files each have a compiler says its own: DS)
                        "compiler_ranges": base.get("compiler_ranges") or self._range_rows(cfg),
-                       "auto_compiler": self.auto_adjusts(proj)}
+                       "auto_compiler": self.auto_adjusts(proj),
+                       "vote_models": self._vote_model_warning(proj["id"])}
 
     def _overview(self, slug: str, proj) -> dict:
         if (fork := self.fork_slug(slug)):

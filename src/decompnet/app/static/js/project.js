@@ -381,6 +381,16 @@ function fnCounts() {
 /* The overview's numbers: function states, pace, who matched what, recent matches. */
 function renderOverview() {
   if (!S.ov || S.tab !== "overview") return;
+  const vm = S.ov.vote_models, vb = $("voteModelsNotice");
+  if (vb) {
+    if (vm && !vm.enough) {
+      const have = vm.present.length ? esc(vm.present.join(", ")) : "none";
+      vb.innerHTML = `\u26a0 Votes can\u2019t complete: merge, set-aside, boundary and compiler decisions need `
+        + `${vm.required} different AI models to agree, but only <b>${have}</b> ${vm.present.length === 1 ? "is" : "are"} `
+        + `running. Start a helper of a different model so agents can confirm each other.`;
+      vb.hidden = false;
+    } else vb.hidden = true;
+  }
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k}"></i>` : "");
   $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
