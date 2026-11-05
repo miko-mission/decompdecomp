@@ -12,7 +12,7 @@ import threading
 import time
 
 from ... import arch, compilermap, consoles, toolchains
-from ...network import Agent, NetworkError
+from ...network import _nudge_log, Agent, NetworkError
 from ...project import compiler_for
 from .common import parse_ranges
 
@@ -608,6 +608,9 @@ class CompilerMixin:
             narrowed = self._subtract_ranges([(a, b) for a, b in ranges], holes)
             self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
             if narrowed and narrowed != sorted([a, b] for a, b in ranges):
+                _nudge_log("AUTO-NARROW " + consoles.compiler_name(toolchain) + " " + " ".join(flags or [])
+                           + ": dropped " + str(len(names)) + " matched (" + ", ".join(sorted(names)[:4])
+                           + "); " + str(len(ranges)) + " range(s) -> " + str(len(narrowed)))
                 return self.set_compiler_ranges(slug, narrowed, toolchain, flags, reopen)
             raise NetworkError(f"{len(broken)} matched function(s) in those ranges wouldn't match with it any more "
                                f"({', '.join(n for n, _ in broken[:5])}) and nothing could be narrowed around")
