@@ -630,9 +630,14 @@ class CompilerMixin:
             survivors = any(f["name"] not in keep and any(a <= (f["vram"] or -1) < b for a, b in narrowed)
                             for f in in_range)
             if narrowed and survivors and narrowed != sorted([a, b] for a, b in ranges):
+                carved = [n for n, _ in broken]
                 _nudge_log("AUTO-NARROW " + consoles.compiler_name(toolchain) + " " + " ".join(flags or [])
-                           + ": dropped " + str(len(broken)) + " (" + ", ".join(n for n, _ in broken[:4])
+                           + ": dropped " + str(len(carved)) + " (" + ", ".join(carved[:4])
                            + "); " + str(len(ranges)) + " range(s) -> " + str(len(narrowed)))
+                with self.store.tx() as db:  # the carve shows in the feed, naming the functions kept off this compiler
+                    self._event(db, proj["id"], None, "narrow",
+                                ", ".join(carved[:6]) + " — " + consoles.compiler_name(toolchain)
+                                + (" " + " ".join(flags) if flags else ""))
                 return self.set_compiler_ranges(slug, narrowed, toolchain, flags, reopen)
             raise NetworkError(f"{len(broken)} function(s) in those ranges wouldn't match with it any more "
                                f"({', '.join(n for n, _ in broken[:5])}) and nothing could be narrowed around")

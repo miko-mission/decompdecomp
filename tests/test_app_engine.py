@@ -331,3 +331,26 @@ def test_recheck_compiler_ranges_unsticks_mis_assigned(net, monkeypatch):  # noq
     ranges = net.cfg(net._project(slug))["compiler_ranges"]
     assert not any(r["start"] <= badfn["vram"] < r["end"] for r in ranges), "mis-assigned near-miss still covered"
     assert any(r["start"] <= okfn["vram"] < r["end"] for r in ranges), "the fine range was disturbed"
+
+
+def test_set_compiler_ranges_records_a_narrow_event(net, monkeypatch):  # noqa: F811
+    """Every auto-narrow leaves a 'narrow' event naming the carved functions, so the carve shows in the live feed
+    whatever triggered it (object-compiler pass, an agent's suggestion, or the re-check sweep)."""
+    import types
+    slug = "demo-quest-64"
+    pid = net._project(slug)["id"]
+    with net.store.tx() as db:
+        ids = [r[0] for r in db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 2", (pid,)).fetchall()]
+        db.execute("UPDATE functions SET status='matched', matched_source='/* m */' WHERE id=?", (ids[0],))
+    m = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", ids[0])
+    nxt = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", ids[1])
+    a, b = m["vram"], nxt["vram"] + (nxt["size"] or 1)
+    monkeypatch.setattr(net, "regression_test",
+                        lambda proj, x, only=None, **k: [(m["name"], None)] if any(f["name"] == m["name"] for f in (only or [])) else [])
+    monkeypatch.setattr(net, "_judge_with", lambda *a, **k: (None, types.SimpleNamespace(score=0), []))
+    before = net.store.one("SELECT COALESCE(MAX(id), 0) AS id FROM events WHERE project_id=?", pid)["id"]
+    tc = net.overview(slug)["compiler"]["toolchain"]
+    net.set_compiler_ranges(slug, [[a, b]], tc, flags=["-O2"])
+    ev = net.store.all("SELECT detail FROM events WHERE project_id=? AND id>? AND kind='narrow'", pid, before)
+    assert ev, "no narrow event recorded"
+    assert m["name"] in ev[0]["detail"], "carved function not named in the narrow event"

@@ -653,6 +653,9 @@ function eventHtml(ev) {
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
+    // "<name>, <name> \u2014 <compiler> <flags>": functions kept on their own compiler, carved out of a
+    // block compiler that would build them worse (auto-narrow). Link each function so the log is clickable.
+    case "narrow": { const [ns, cc] = d.split(" \u2014 "); const links = (ns || "").split(", ").map((n) => fnLink(n.trim())).join(", "); return `<span class="ok">\u2194</span> kept ${links} on their own compiler${cc ? ", off " + esc(cc) : ""}`; }
     case "collab": return esc(d);
     case "paused": return `<span class="bad">${who} paused: ${esc(d)}</span>`;
     case "stopped": return `${who} stopped: ${esc(d)}`;
