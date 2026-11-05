@@ -548,6 +548,27 @@ class CompilerMixin:
         self._update_cfg(slug, lambda cfg: next(s for s in cfg["suggestions"] if s["id"] == sid).__setitem__(
             "status", "applied" if apply else "dismissed"))
 
+    @staticmethod
+    def _subtract_ranges(ranges, holes):
+        """Each [a,b) range minus every (ha,hb) hole: the kept sub-ranges (sorted, non-empty). Used to carve the
+        matched functions that would regress out of a proposed compiler range so the rest can still apply."""
+        out = []
+        for a, b in ranges:
+            segs = [(a, b)]
+            for ha, hb in holes:
+                nxt = []
+                for s, e in segs:
+                    if hb <= s or ha >= e:
+                        nxt.append((s, e))
+                    else:
+                        if s < ha:
+                            nxt.append((s, ha))
+                        if hb < e:
+                            nxt.append((hb, e))
+                segs = nxt
+            out += [[s, e] for s, e in segs if e > s]
+        return sorted(out)
+
     def set_compiler_ranges(self, slug: str, ranges: list[list[int]], toolchain: str | None,
                             flags: list[str] | None = None, reopen: bool = False) -> None:
         """Address ranges built by another compiler than the rest of the game (replacing ranges they overlap), or
@@ -578,11 +599,22 @@ class CompilerMixin:
                                       header_for=lambda f: self._context(proj["id"], f["unit"])["header"]) if inside else []
         if broken and reopen and not toolchain:
             self._reopen(proj, [n for n, _ in broken], "its range was removed")
+        elif broken and toolchain:
+            # Auto-narrow: carve the matched functions that would regress out of the ranges and re-apply the
+            # remainder, so a function that only matches with these flags still gets them without breaking its
+            # neighbours. The narrowed ranges exclude every breaker, so the re-check passes (or shrinks again).
+            names = {n for n, _ in broken}
+            holes = [(f["vram"], f["vram"] + (f["size"] or 1)) for f in inside if f["name"] in names]
+            narrowed = self._subtract_ranges([(a, b) for a, b in ranges], holes)
+            self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
+            if narrowed and narrowed != sorted([a, b] for a, b in ranges):
+                return self.set_compiler_ranges(slug, narrowed, toolchain, flags, reopen)
+            raise NetworkError(f"{len(broken)} matched function(s) in those ranges wouldn't match with it any more "
+                               f"({', '.join(n for n, _ in broken[:5])}) and nothing could be narrowed around")
         elif broken:
             self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
             raise NetworkError(f"{len(broken)} matched function(s) in those ranges wouldn't match with it any more "
-                               f"({', '.join(n for n, _ in broken[:5])}): narrow the ranges"
-                               + ("" if toolchain else ", or remove them and reopen those functions"))
+                               f"({', '.join(n for n, _ in broken[:5])}): narrow the ranges, or remove them and reopen those functions")
         with self.store.tx() as db:
             where = ", ".join(f"0x{a:X}-0x{b:X}" for a, b in ranges)
             self._event(db, proj["id"], None, "compiler", f"{consoles.compiler_name(toolchain)} {' '.join(flags)} for {where}"

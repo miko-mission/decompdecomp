@@ -251,3 +251,32 @@ def test_overview_vote_model_warning(net):  # noqa: F811
     active("claude-haiku-5-5-1")                        # a second, distinct model
     vm = net.overview(slug)["vote_models"]
     assert vm["enough"] is True and {"codex-gpt-6-luna", "claude-haiku-5-5"} <= set(vm["present"])
+
+
+def test_subtract_ranges():
+    from decompnet.app.engine.compilers import CompilerMixin as _C  # staticmethod, no instance needed
+    sub = _C._subtract_ranges
+    assert sub([(0, 100)], [(40, 60)]) == [[0, 40], [60, 100]]        # hole in the middle -> two pieces
+    assert sub([(0, 100)], [(0, 100)]) == []                          # whole range removed
+    assert sub([(0, 100)], [(90, 200)]) == [[0, 90]]                  # hole past the end, clipped
+    assert sub([(0, 100)], [(10, 20), (30, 40)]) == [[0, 10], [20, 30], [40, 100]]  # two holes
+    assert sub([(0, 50), (100, 150)], [(10, 20)]) == [[0, 10], [20, 50], [100, 150]]
+
+
+def test_set_compiler_ranges_auto_narrows_around_matched(net, monkeypatch):  # noqa: F811
+    slug = "demo-quest-64"
+    pid = net._project(slug)["id"]
+    with net.store.tx() as db:  # ensure a known matched function exists to be the breaker
+        fid = db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 1", (pid,)).fetchone()[0]
+        db.execute("UPDATE functions SET status='matched', matched_source='/* m */' WHERE id=?", (fid,))
+    m = net.store.one("SELECT name, vram, size FROM functions WHERE project_id=? AND status='matched' "
+                      "AND size>0 ORDER BY vram LIMIT 1", pid)
+    a, b = m["vram"], m["vram"] + m["size"] + 0x200         # covers the matched function and 0x200 past it
+    # stub the regression test: the matched function "breaks" only while it is still inside the tested range
+    monkeypatch.setattr(net, "regression_test",
+                        lambda proj, x, only=None, **k: [(m["name"], None)] if any(f["name"] == m["name"] for f in (only or [])) else [])
+    tc = net.overview(slug)["compiler"]["toolchain"]
+    net.set_compiler_ranges(slug, [[a, b]], tc, flags=["-O2"])
+    ranges = net.cfg(net._project(slug))["compiler_ranges"]
+    assert not any(r["start"] <= m["vram"] < r["end"] for r in ranges), "breaker still covered"   # carved out
+    assert any(r["start"] >= m["vram"] + m["size"] for r in ranges), "the rest was dropped too"   # remainder kept
