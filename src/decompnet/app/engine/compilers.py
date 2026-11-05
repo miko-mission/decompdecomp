@@ -648,20 +648,23 @@ class CompilerMixin:
     def recheck_compiler_ranges(self, slug: str) -> int:
         """Re-apply the carve to existing ranges so auto-narrow fires on what is now mis-assigned -- e.g. an open
         near-miss swept into a block compiler that scores it worse than its best. Pre-filtered (cheap) to ranges
-        that hold such a near-miss, then re-applied (recompiles are cheap). Returns how many ranges it re-applied."""
+        that hold such a near-miss, then re-applied (recompiles are cheap). Returns how many ranges it actually
+        narrowed (a range whose functions are all fine is re-applied unchanged and not counted)."""
         proj = self._project(slug)
-        n = 0
+        narrowed = 0
         for r in list(self.cfg(proj).get("compiler_ranges", [])):
             opens = self.store.all("SELECT best_score, n_insns FROM functions WHERE project_id=? AND status='open' "
                                    "AND best_score IS NOT NULL AND vram>=? AND vram<?", proj["id"], r["start"], r["end"])
             if not any(o["n_insns"] and o["best_score"] / (o["n_insns"] * 100) < NEAR_MISS_RATIO for o in opens):
                 continue
+            before = self.cfg(self._project(slug)).get("compiler_ranges", [])
             try:
                 self.set_compiler_ranges(slug, [[r["start"], r["end"]]], r["toolchain"], list(r["flags"]))
-                n += 1
             except NetworkError:
-                pass
-        return n
+                continue
+            if self.cfg(self._project(slug)).get("compiler_ranges", []) != before:
+                narrowed += 1
+        return narrowed
 
     def _reopen(self, proj, names: list[str], why: str) -> None:
         """Matched functions open again: their matching C becomes their best attempt, scored with the compiler they're

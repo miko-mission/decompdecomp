@@ -161,6 +161,19 @@ class PlayStation2(Console):
     def on_start(self, net, slug: str, log=print) -> None:
         name_kernel_calls(net, slug, log=log)  # projects imported before their kernel calls were named at import
         self.suggest_object_compilers(net, slug)
+        # Re-check the compiler ranges: a function since swept into a block compiler that builds it worse than its
+        # best gets carved back out (auto-narrow). Runs on every start, on the "Check again" button, and once after
+        # each update; recompiles are cheap. Never stands between the user and the app.
+        try:
+            narrowed = net.recheck_compiler_ranges(slug)
+        except Exception:
+            log("compiler-range re-check failed")
+            narrowed = 0
+        if narrowed:
+            with net.store.tx() as db:
+                net._event(db, net.project_row(slug)["id"], None, "analysis",
+                           f"{narrowed} compiler range{'' if narrowed == 1 else 's'} narrowed around "
+                           "functions a block compiler was building worse than their best")
 
     def suggest_object_compilers(self, net, slug: str) -> None:
         """A project imported before its program's object files were read (elf.object_compilers), or by an older

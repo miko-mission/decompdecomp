@@ -303,3 +303,31 @@ def test_set_compiler_ranges_auto_narrows_around_open_near_miss(net, monkeypatch
     ranges = net.cfg(net._project(slug))["compiler_ranges"]
     assert not any(r["start"] <= fn["vram"] < r["end"] for r in ranges), "near-miss still covered"     # carved out
     assert any(r["start"] <= nxt["vram"] < r["end"] for r in ranges), "survivor lost the compiler"     # survivor kept
+
+
+def test_recheck_compiler_ranges_unsticks_mis_assigned(net, monkeypatch):  # noqa: F811
+    """A sweep over existing ranges: a range holding an open near-miss that scores worse under its own compiler is
+    narrowed around it; a range whose near-miss is fine is left untouched. The count is real narrows, not ranges
+    looked at."""
+    import types
+    slug = "demo-quest-64"
+    pid = net._project(slug)["id"]
+    fns = net.store.all("SELECT id, name, vram, size FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 4", pid)
+    assert len(fns) == 4
+    badfn, keepA, okfn, keepB = fns     # badfn regresses (gets carved); okfn is fine (its range is left alone)
+    with net.store.tx() as db:
+        for fn in (badfn, okfn):        # both are open near-misses by the pre-filter
+            db.execute("UPDATE functions SET status='open', best_source='/* near */', best_score=50, n_insns=100 WHERE id=?", (fn["id"],))
+    tc = net.overview(slug)["compiler"]["toolchain"]
+    rA = {"start": badfn["vram"], "end": keepA["vram"] + (keepA["size"] or 1), "toolchain": tc, "flags": ["-O2"]}
+    rB = {"start": okfn["vram"], "end": keepB["vram"] + (keepB["size"] or 1), "toolchain": tc, "flags": ["-O2"]}
+    net._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", [rA, rB]))
+    monkeypatch.setattr(net, "regression_test", lambda *a, **k: [])          # no matched breakers
+    # only badfn scores worse under its range's compiler; everything else (okfn, the survivors) is fine
+    monkeypatch.setattr(net, "_judge_with",
+                        lambda proj, fn, t, fl, src: (None, types.SimpleNamespace(score=9999 if fn["name"] == badfn["name"] else 0), []))
+    narrowed = net.recheck_compiler_ranges(slug)
+    assert narrowed == 1, f"expected exactly one range narrowed, got {narrowed}"
+    ranges = net.cfg(net._project(slug))["compiler_ranges"]
+    assert not any(r["start"] <= badfn["vram"] < r["end"] for r in ranges), "mis-assigned near-miss still covered"
+    assert any(r["start"] <= okfn["vram"] < r["end"] for r in ranges), "the fine range was disturbed"
