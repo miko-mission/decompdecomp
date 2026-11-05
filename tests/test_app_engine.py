@@ -275,8 +275,30 @@ def test_set_compiler_ranges_auto_narrows_around_matched(net, monkeypatch):  # n
     # stub the regression test: the matched function "breaks" only while it is still inside the tested range
     monkeypatch.setattr(net, "regression_test",
                         lambda proj, x, only=None, **k: [(m["name"], None)] if any(f["name"] == m["name"] for f in (only or [])) else [])
+    import types as _t
+    monkeypatch.setattr(net, "_judge_with", lambda *a, **k: (None, _t.SimpleNamespace(score=0), []))  # no open regresses
     tc = net.overview(slug)["compiler"]["toolchain"]
     net.set_compiler_ranges(slug, [[a, b]], tc, flags=["-O2"])
     ranges = net.cfg(net._project(slug))["compiler_ranges"]
     assert not any(r["start"] <= m["vram"] < r["end"] for r in ranges), "breaker still covered"   # carved out
     assert any(r["start"] >= m["vram"] + m["size"] for r in ranges), "the rest was dropped too"   # remainder kept
+
+
+def test_set_compiler_ranges_auto_narrows_around_open_near_miss(net, monkeypatch):  # noqa: F811
+    import types
+    slug = "demo-quest-64"
+    pid = net._project(slug)["id"]
+    with net.store.tx() as db:  # an OPEN near-miss: close to matching, with a best attempt on record
+        fid = db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 1", (pid,)).fetchone()[0]
+        db.execute("UPDATE functions SET status='open', best_source='/* near */', best_score=50, n_insns=100 WHERE id=?", (fid,))
+    fn = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", fid)
+    a, b = fn["vram"], fn["vram"] + fn["size"] + 0x200     # covers the near-miss and 0x200 past it
+    monkeypatch.setattr(net, "regression_test", lambda *a, **k: [])        # no matched breakers
+    # the near-miss scores worse under the candidate compiler (50 -> 9999); every other function is fine
+    monkeypatch.setattr(net, "_judge_with",
+                        lambda proj, f, tc, fl, src: (None, types.SimpleNamespace(score=9999 if f["name"] == fn["name"] else 0), []))
+    tc = net.overview(slug)["compiler"]["toolchain"]
+    net.set_compiler_ranges(slug, [[a, b]], tc, flags=["-O2"])
+    ranges = net.cfg(net._project(slug))["compiler_ranges"]
+    assert not any(r["start"] <= fn["vram"] < r["end"] for r in ranges), "near-miss still covered"   # carved out
+    assert any(r["start"] >= fn["vram"] + fn["size"] for r in ranges), "the rest was dropped too"    # remainder kept

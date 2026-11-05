@@ -30,6 +30,10 @@ MAX_FLAG_VARIANTS = 12
 FLAGS_SHOWN = 6
 
 
+NEAR_MISS_RATIO = 0.05  # an open function this close to matching (score / max) is worth protecting from a
+# block compiler that would score it worse than its best attempt
+
+
 class CompilerMixin:
     # Settings: auto-adjust compiler. A suggested compiler is applied without asking once it's proven (a function's
     # C matches with it) or three agents agree on it (see suggest)
@@ -592,36 +596,66 @@ class CompilerMixin:
             cfg["compiler_ranges"] = sorted(keep, key=lambda r: r["start"])
         self._update_cfg(slug, change)
         proj = self._project(slug)
-        # functions already matched in those ranges must still match with it (auto-adjust runs unattended)
-        inside = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
-                  if any(a <= (f["vram"] or -1) < b for a, b in ranges)]
-        broken = self.regression_test(proj, None, only=inside,
-                                      header_for=lambda f: self._context(proj["id"], f["unit"])["header"]) if inside else []
+        # Functions in those ranges that would regress with it (auto-adjust runs unattended): already-matched ones
+        # that stop matching, and open near-misses whose best attempt scores worse -- a block compiler that is wrong
+        # for a function already close to matching under another. Recompiles are cheap, so near-misses are tested too.
+        in_range = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
+                    if any(a <= (f["vram"] or -1) < b for a, b in ranges)]
+        matched = [f for f in in_range if f["status"] == "matched"]
+        broken = self.regression_test(proj, None, only=matched,
+                                      header_for=lambda f: self._context(proj["id"], f["unit"])["header"]) if matched else []
+        at_risk = {n: f for f in matched for n, _ in broken if f["name"] == n}
+        if toolchain:
+            for f in in_range:
+                if (f["status"] == "open" and f["best_source"] and f["best_score"] is not None and f["n_insns"]
+                        and f["best_score"] / (f["n_insns"] * 100) < NEAR_MISS_RATIO):
+                    _, d, _ = self._judge_with(proj, f, toolchain, flags, f["best_source"])
+                    if d is None or d.score is None or d.score > f["best_score"]:
+                        broken.append((f["name"], "open near-miss would score worse with it"))
+                        at_risk[f["name"]] = f
         if broken and reopen and not toolchain:
             self._reopen(proj, [n for n, _ in broken], "its range was removed")
         elif broken and toolchain:
-            # Auto-narrow: carve the matched functions that would regress out of the ranges and re-apply the
-            # remainder, so a function that only matches with these flags still gets them without breaking its
-            # neighbours. The narrowed ranges exclude every breaker, so the re-check passes (or shrinks again).
-            names = {n for n, _ in broken}
-            holes = [(f["vram"], f["vram"] + (f["size"] or 1)) for f in inside if f["name"] in names]
+            # Auto-narrow: carve the functions that would regress (matched that break, open near-misses that get
+            # worse) out of the ranges and re-apply the remainder -- so a function that only matches with these flags
+            # gets them, while functions better off without them keep their compiler. The narrowed ranges exclude
+            # every one, so the re-check passes (or shrinks again).
+            holes = [(at_risk[n]["vram"], at_risk[n]["vram"] + (at_risk[n]["size"] or 1)) for n, _ in broken]
             narrowed = self._subtract_ranges([(a, b) for a, b in ranges], holes)
             self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
             if narrowed and narrowed != sorted([a, b] for a, b in ranges):
                 _nudge_log("AUTO-NARROW " + consoles.compiler_name(toolchain) + " " + " ".join(flags or [])
-                           + ": dropped " + str(len(names)) + " matched (" + ", ".join(sorted(names)[:4])
+                           + ": dropped " + str(len(broken)) + " (" + ", ".join(n for n, _ in broken[:4])
                            + "); " + str(len(ranges)) + " range(s) -> " + str(len(narrowed)))
                 return self.set_compiler_ranges(slug, narrowed, toolchain, flags, reopen)
-            raise NetworkError(f"{len(broken)} matched function(s) in those ranges wouldn't match with it any more "
+            raise NetworkError(f"{len(broken)} function(s) in those ranges wouldn't match with it any more "
                                f"({', '.join(n for n, _ in broken[:5])}) and nothing could be narrowed around")
         elif broken:
             self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
-            raise NetworkError(f"{len(broken)} matched function(s) in those ranges wouldn't match with it any more "
+            raise NetworkError(f"{len(broken)} function(s) in those ranges wouldn't match with it any more "
                                f"({', '.join(n for n, _ in broken[:5])}): narrow the ranges, or remove them and reopen those functions")
         with self.store.tx() as db:
             where = ", ".join(f"0x{a:X}-0x{b:X}" for a, b in ranges)
             self._event(db, proj["id"], None, "compiler", f"{consoles.compiler_name(toolchain)} {' '.join(flags)} for {where}"
                         if toolchain else f"the project's compiler again for {where}")
+
+    def recheck_compiler_ranges(self, slug: str) -> int:
+        """Re-apply the carve to existing ranges so auto-narrow fires on what is now mis-assigned -- e.g. an open
+        near-miss swept into a block compiler that scores it worse than its best. Pre-filtered (cheap) to ranges
+        that hold such a near-miss, then re-applied (recompiles are cheap). Returns how many ranges it re-applied."""
+        proj = self._project(slug)
+        n = 0
+        for r in list(self.cfg(proj).get("compiler_ranges", [])):
+            opens = self.store.all("SELECT best_score, n_insns FROM functions WHERE project_id=? AND status='open' "
+                                   "AND best_score IS NOT NULL AND vram>=? AND vram<?", proj["id"], r["start"], r["end"])
+            if not any(o["n_insns"] and o["best_score"] / (o["n_insns"] * 100) < NEAR_MISS_RATIO for o in opens):
+                continue
+            try:
+                self.set_compiler_ranges(slug, [[r["start"], r["end"]]], r["toolchain"], list(r["flags"]))
+                n += 1
+            except NetworkError:
+                pass
+        return n
 
     def _reopen(self, proj, names: list[str], why: str) -> None:
         """Matched functions open again: their matching C becomes their best attempt, scored with the compiler they're
