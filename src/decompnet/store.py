@@ -255,7 +255,9 @@ class Store:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_events_detail ON events(project_id, kind, detail)")
         # a project's last activity, for the project list and its page: read every one of its events (9 ms for ten
         # projects with 51,000 events, each sidebar ask; now 0.03)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_events_project_time ON events(project_id, created_at)")
+        self.conn.execute("DROP INDEX IF EXISTS idx_events_project_time")  # superseded by the covering index below
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_events_project_time_agent "
+                          "ON events(project_id, created_at, agent_id)")
         # the progress the GUI asks for every second (totals, the map's "anything new?"), answered from this narrow
         # index instead of reading every function's assembly and sources: 31 ms -> about 2 for 36,000 functions
         # (with the set-aside and gone marks, whether it's polished and who matched it: the sidebar's and the project's

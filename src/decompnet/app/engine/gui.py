@@ -50,9 +50,14 @@ class GuiMixin:
         A merge/not_c/boundary/compiler vote needs NOT_C_MODELS distinct models; with fewer running it can never
         reach quorum however many agents agree, so the operator is told to add a different model."""
         cut = time.time() - VOTE_MODEL_WINDOW
-        present = sorted({model_of(r["name"]) for r in self.store.all(
-            "SELECT DISTINCT a.name FROM events e JOIN agents a ON a.id=e.agent_id WHERE e.project_id=? "
-            "AND e.created_at>=? AND a.origin='local' AND a.name NOT IN ('you','autopilot')", pid, cut)})
+        # Count distinct models of helper agents active lately. The events scan reads project_id, created_at and
+        # agent_id straight from the covering index (this runs every second per project); names resolve from the
+        # tiny agents table in Python, so the hot query never reads a function or event row off disk.
+        ids = {r["agent_id"] for r in self.store.all(
+            "SELECT DISTINCT agent_id FROM events WHERE project_id=? AND created_at>=?", pid, cut)}
+        names = {r["id"]: r["name"] for r in self.store.all("SELECT id, name FROM agents WHERE origin='local'")}
+        present = sorted({model_of(names[i]) for i in ids
+                          if i in names and names[i] not in ("you", "autopilot")})
         return {"present": present, "required": NOT_C_MODELS, "enough": len(present) >= NOT_C_MODELS}
 
     def overview(self, slug: str) -> dict:

@@ -623,7 +623,13 @@ class CompilerMixin:
             holes = [(at_risk[n]["vram"], at_risk[n]["vram"] + (at_risk[n]["size"] or 1)) for n, _ in broken]
             narrowed = self._subtract_ranges([(a, b) for a, b in ranges], holes)
             self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
-            if narrowed and narrowed != sorted([a, b] for a, b in ranges):
+            # Only narrow if a function that isn't a breaker actually falls in the remainder to receive the
+            # compiler. A range that is all breakers (e.g. every function already matched under another) has
+            # nothing to narrow around, so it is refused as before rather than applied to the padding between them.
+            keep = {n for n, _ in broken}
+            survivors = any(f["name"] not in keep and any(a <= (f["vram"] or -1) < b for a, b in narrowed)
+                            for f in in_range)
+            if narrowed and survivors and narrowed != sorted([a, b] for a, b in ranges):
                 _nudge_log("AUTO-NARROW " + consoles.compiler_name(toolchain) + " " + " ".join(flags or [])
                            + ": dropped " + str(len(broken)) + " (" + ", ".join(n for n, _ in broken[:4])
                            + "); " + str(len(ranges)) + " range(s) -> " + str(len(narrowed)))

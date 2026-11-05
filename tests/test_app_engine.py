@@ -266,13 +266,13 @@ def test_subtract_ranges():
 def test_set_compiler_ranges_auto_narrows_around_matched(net, monkeypatch):  # noqa: F811
     slug = "demo-quest-64"
     pid = net._project(slug)["id"]
-    with net.store.tx() as db:  # ensure a known matched function exists to be the breaker
-        fid = db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 1", (pid,)).fetchone()[0]
-        db.execute("UPDATE functions SET status='matched', matched_source='/* m */' WHERE id=?", (fid,))
-    m = net.store.one("SELECT name, vram, size FROM functions WHERE project_id=? AND status='matched' "
-                      "AND size>0 ORDER BY vram LIMIT 1", pid)
-    a, b = m["vram"], m["vram"] + m["size"] + 0x200         # covers the matched function and 0x200 past it
-    # stub the regression test: the matched function "breaks" only while it is still inside the tested range
+    with net.store.tx() as db:  # the first function is a matched breaker; the second rides along as a survivor
+        ids = [r[0] for r in db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 2", (pid,)).fetchall()]
+        db.execute("UPDATE functions SET status='matched', matched_source='/* m */' WHERE id=?", (ids[0],))
+    m = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", ids[0])
+    nxt = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", ids[1])
+    a, b = m["vram"], nxt["vram"] + (nxt["size"] or 1)      # covers the breaker and the survivor after it
+    # the matched function "breaks" only while it is still inside the tested range; the survivor never breaks
     monkeypatch.setattr(net, "regression_test",
                         lambda proj, x, only=None, **k: [(m["name"], None)] if any(f["name"] == m["name"] for f in (only or [])) else [])
     import types as _t
@@ -280,19 +280,20 @@ def test_set_compiler_ranges_auto_narrows_around_matched(net, monkeypatch):  # n
     tc = net.overview(slug)["compiler"]["toolchain"]
     net.set_compiler_ranges(slug, [[a, b]], tc, flags=["-O2"])
     ranges = net.cfg(net._project(slug))["compiler_ranges"]
-    assert not any(r["start"] <= m["vram"] < r["end"] for r in ranges), "breaker still covered"   # carved out
-    assert any(r["start"] >= m["vram"] + m["size"] for r in ranges), "the rest was dropped too"   # remainder kept
+    assert not any(r["start"] <= m["vram"] < r["end"] for r in ranges), "breaker still covered"       # carved out
+    assert any(r["start"] <= nxt["vram"] < r["end"] for r in ranges), "survivor lost the compiler"    # survivor kept
 
 
 def test_set_compiler_ranges_auto_narrows_around_open_near_miss(net, monkeypatch):  # noqa: F811
     import types
     slug = "demo-quest-64"
     pid = net._project(slug)["id"]
-    with net.store.tx() as db:  # an OPEN near-miss: close to matching, with a best attempt on record
-        fid = db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 1", (pid,)).fetchone()[0]
-        db.execute("UPDATE functions SET status='open', best_source='/* near */', best_score=50, n_insns=100 WHERE id=?", (fid,))
-    fn = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", fid)
-    a, b = fn["vram"], fn["vram"] + fn["size"] + 0x200     # covers the near-miss and 0x200 past it
+    with net.store.tx() as db:  # an OPEN near-miss breaker, with a survivor function riding along in the range
+        ids = [r[0] for r in db.execute("SELECT id FROM functions WHERE project_id=? AND size>0 ORDER BY vram LIMIT 2", (pid,)).fetchall()]
+        db.execute("UPDATE functions SET status='open', best_source='/* near */', best_score=50, n_insns=100 WHERE id=?", (ids[0],))
+    fn = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", ids[0])
+    nxt = net.store.one("SELECT name, vram, size FROM functions WHERE id=?", ids[1])
+    a, b = fn["vram"], nxt["vram"] + (nxt["size"] or 1)   # covers the near-miss breaker and the survivor
     monkeypatch.setattr(net, "regression_test", lambda *a, **k: [])        # no matched breakers
     # the near-miss scores worse under the candidate compiler (50 -> 9999); every other function is fine
     monkeypatch.setattr(net, "_judge_with",
@@ -300,5 +301,5 @@ def test_set_compiler_ranges_auto_narrows_around_open_near_miss(net, monkeypatch
     tc = net.overview(slug)["compiler"]["toolchain"]
     net.set_compiler_ranges(slug, [[a, b]], tc, flags=["-O2"])
     ranges = net.cfg(net._project(slug))["compiler_ranges"]
-    assert not any(r["start"] <= fn["vram"] < r["end"] for r in ranges), "near-miss still covered"   # carved out
-    assert any(r["start"] >= fn["vram"] + fn["size"] for r in ranges), "the rest was dropped too"    # remainder kept
+    assert not any(r["start"] <= fn["vram"] < r["end"] for r in ranges), "near-miss still covered"     # carved out
+    assert any(r["start"] <= nxt["vram"] < r["end"] for r in ranges), "survivor lost the compiler"     # survivor kept
