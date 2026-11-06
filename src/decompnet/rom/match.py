@@ -319,17 +319,31 @@ class _Linker:
         if length <= 0:
             return
         mine = bytearray(sec.data()[off:off + length])
-        for at, rtype, s in self._relocs_in(shndx):  # relocated words inside the data, e.g. jump tables
+        for at, rtype, s in self._relocs_in(shndx):  # relocated words inside the region (jump tables, or a clone's code)
             at -= off
-            if rtype != R_MIPS_32 or not 0 <= at <= length - 4:
+            if not 0 <= at <= length - 4:
                 continue
-            dest, own = self._pointee(s, int.from_bytes(mine[at:at + 4], self.target.order))
-            if own is not None:
-                dest = self.local_map.get(own)
-            if dest is None:
-                self.problem(f"can't place a pointer inside your data at {sec.name}+0x{off + at:X}")
-                return
-            mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, self.target.order)
+            word = int.from_bytes(mine[at:at + 4], self.target.order)
+            if rtype == R_MIPS_32:
+                dest, own = self._pointee(s, word)
+                if own is not None:
+                    dest = self.local_map.get(own)
+                if dest is None:
+                    self.problem(f"can't place a pointer inside your data at {sec.name}+0x{off + at:X}")
+                    return
+                mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, self.target.order)
+            elif rtype == R_MIPS_GPREL16:
+                # a $gp-relative instruction in code the candidate defines (a static clone of a matched callee the
+                # compiler needs in the same unit): its immediate is address - $gp. Apply it here as the main code
+                # path does, so the clone's bytes compare relocated instead of as the assembler's unresolved 0 (#494).
+                residual = word & 0xFFFF
+                residual = residual - 0x10000 if residual & 0x8000 else residual
+                if s["st_info"]["bind"] == "STB_LOCAL":
+                    residual += self.gp0
+                base = self.resolve_name(canonical_symbol(s.name, s["st_info"]["bind"]))
+                if base is None:
+                    return
+                mine[at:at + 4] = _patch(word, R_MIPS_GPREL16, base + residual, self.target.gp).to_bytes(4, self.target.order)
         n = self.significant(bytes(mine), addr, self.widths.get((shndx, off)))
         rom = self.read(addr, n)
         if rom is None:
