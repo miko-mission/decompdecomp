@@ -371,3 +371,31 @@ def test_brief_has_blocks_section(net):
 def test_blocks_section_absent_without_asm(net):
     proj = net.store.one("SELECT * FROM projects WHERE slug=?", "demo-quest-64")
     assert net._blocks_brief({"asm": "", "vram": 0, "size": 0, "id": -1}, proj, None) == []
+
+
+def test_blocks_brief_resolves_jumptables_from_raw_asm_not_renamed():
+    # rename_tokens rewrites jtbl_XXXXXXXX -> D_XXXXXXXX (unnamed jump-table addresses).
+    # _blocks_brief must resolve jump tables from the RAW asm (jtbl_ intact), not the renamed one.
+    from decompnet.app.engine import RomNetwork
+    JT = ("/* 0 14a000 2c410001 */\tsltiu\t$1, $2, 0x1\n"
+          "/* 4 14a004 3c030021 */\tlui\t$3, %hi(jtbl_00211000)\n"
+          "/* 8 14a008 24631000 */\taddiu\t$3, $3, %lo(jtbl_00211000)\n"
+          "/* c 14a00c 00400008 */\tjr\t$2\n"
+          "/* 10 14a010 03e00008 */\tjr\t$ra\n")
+
+    class FakeNet:
+        def is_rom(self, proj):
+            return True
+
+        def _asm_text(self, fn, proj):
+            return fn["asm"].replace("jtbl_", "D_")  # simulate the real rename_tokens
+
+        def reader(self, proj):
+            return lambda addr, n: (0x14a010).to_bytes(4, "little") if addr == 0x211000 else None
+
+        _last_diffs = {}
+
+    fn = {"asm": JT, "vram": 0x14a000, "size": 0x20, "id": 1}
+    text = "\n".join(RomNetwork._blocks_brief(FakeNet(), fn, {"big_endian": False}, None))
+    assert "### Blocks" in text
+    assert "jtbl_00211000" in text  # resolved from RAW asm, not the renamed D_ form

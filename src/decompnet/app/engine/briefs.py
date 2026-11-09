@@ -458,7 +458,7 @@ class BriefMixin:
                 return []
             if not (fn["asm"] or "").strip():
                 return []
-            parsed = parse_asm(self._asm_text(fn, proj))
+            parsed = parse_asm(fn["asm"] or "")
             if not parsed.insns:
                 return []
             tables = resolve_jump_tables(parsed, self.reader(proj), bool(proj["big_endian"]),
