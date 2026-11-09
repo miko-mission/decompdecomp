@@ -1,4 +1,4 @@
-from decompnet.blocks import parse_asm, resolve_jump_tables
+from decompnet.blocks import parse_asm, resolve_jump_tables, decompose, Block, JumpTable, JumpCase
 
 SAMPLE = """\
 func:
@@ -56,3 +56,29 @@ def test_reader_miss_skips_table():
 def test_no_jumptable_returns_empty():
     p = parse_asm("/* 0 14a000 03e00008 */\tjr\t$ra\n")
     assert resolve_jump_tables(p, (lambda a, n: b"\0\0\0\0"), False, 0x14a000, 0x14a004) == []
+
+
+# --- Task 3: basic-block decomposition ---
+
+def test_single_block_when_no_branches():
+    p = parse_asm("/* 0 14a000 27bdfff0 */\taddiu\t$sp,$sp,-0x10\n/* 4 14a004 03e00008 */\tjr\t$ra\n")
+    b = decompose(p, [])
+    assert len(b) == 1 and b[0].start == 0 and b[0].end == 2
+
+
+def test_branch_target_and_fallthrough_make_blocks():
+    p = parse_asm("""\
+/* 0 14a000 1000ffff */\tb\t.LT
+/* 4 14a004 00000000 */\tnop
+.LT:
+/* 8 14a008 03e00008 */\tjr\t$ra
+""")
+    blocks = decompose(p, [])
+    assert [(b.start, b.end) for b in blocks] == [(0, 1), (1, 2), (2, 3)]
+    assert blocks[0].terminator == "b"
+
+
+def test_jumptable_targets_are_leaders():
+    p = parse_asm("/* 0 14a000 1 */\tnop\n/* 4 14a004 2 */\tnop\n/* 8 14a008 3 */\tnop\n")
+    jt = JumpTable(addr=0x211000, symbol="jtbl_00211000", cases=[JumpCase(0, 0x14a008, 2, True)])
+    assert any(b.start == 2 for b in decompose(p, [jt]))

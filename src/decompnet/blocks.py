@@ -139,3 +139,62 @@ def resolve_jump_tables(
         if ok:
             tables.append(JumpTable(addr=addr, symbol=sym, cases=cases))
     return tables
+
+
+# ---------------------------------------------------------------------------
+# Task 3: basic-block decomposition
+# ---------------------------------------------------------------------------
+
+# All control-transfer mnemonics (MIPS). jal/jalr are calls (control returns),
+# so they do NOT start a new block; they are listed for terminator identification.
+BRANCH_MNEMONICS = frozenset({
+    "b", "beq", "bne", "blez", "bgtz", "bltz", "bgez", "beqz", "bnez",
+    "bc1t", "bc1f", "j", "jr", "jal", "jalr",
+})
+_FALLTHROUGH = frozenset({
+    "b", "beq", "bne", "blez", "bgtz", "bltz", "bgez", "beqz", "bnez", "bc1t", "bc1f",
+})
+_JR_J = frozenset({"jr", "j"})
+
+
+@dataclass
+class Block:
+    index: int
+    start: int
+    end: int
+    label: Optional[str]
+    terminator: str
+
+
+def decompose(parsed: ParsedAsm, jump_tables: list[JumpTable]) -> list[Block]:
+    """Split the function into basic blocks. Leaders: index 0, each resolvable
+    branch target, the fall-through after a conditional/`b` branch, the insn after
+    any jr/j, and each in-function jump-table case target."""
+    n = len(parsed.insns)
+    if n == 0:
+        return []
+    leaders: set[int] = {0}
+    for insn in parsed.insns:
+        mn = insn.mnemonic
+        if mn not in BRANCH_MNEMONICS:
+            continue
+        last = insn.operands.split(",")[-1].strip()
+        target = parsed.label_to_index.get(last)
+        if target is not None and 0 <= target < n:
+            leaders.add(target)
+        if (mn in _FALLTHROUGH or mn in _JR_J) and insn.index + 1 < n:
+            leaders.add(insn.index + 1)
+    for jt in jump_tables:
+        for c in jt.cases:
+            if c.in_func and c.target_index is not None and 0 <= c.target_index < n:
+                leaders.add(c.target_index)
+
+    starts = sorted(leaders)
+    index_to_label = {idx: lbl for lbl, idx in parsed.label_to_index.items()}
+    blocks: list[Block] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else n
+        terminator = parsed.insns[end - 1].mnemonic if end - 1 >= start else ""
+        blocks.append(Block(index=i, start=start, end=end,
+                            label=index_to_label.get(start), terminator=terminator))
+    return blocks
