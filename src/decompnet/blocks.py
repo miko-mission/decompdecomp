@@ -6,8 +6,10 @@ Markers consumed by `attribute` are the ones produced by `decompnet.scoring.diff
 """
 from __future__ import annotations
 
+import bisect
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 # ---------------------------------------------------------------------------
@@ -198,3 +200,62 @@ def decompose(parsed: ParsedAsm, jump_tables: list[JumpTable]) -> list[Block]:
         blocks.append(Block(index=i, start=start, end=end,
                             label=index_to_label.get(start), terminator=terminator))
     return blocks
+
+
+# ---------------------------------------------------------------------------
+# Task 4: per-block diff attribution
+# ---------------------------------------------------------------------------
+
+# Markers from scoring.diff: " "=equal, r=regalloc, s=stack, o=reorder (global,
+# Phase-2 reconcilable) vs i=operand, |=different, <=missing, >=extra (logic).
+BYTE_PENDING_MARKERS = frozenset({"r", "s", "o"})
+DIFFING_MARKERS = frozenset({"i", "|", "<"})
+
+
+@dataclass
+class BlockStatus:
+    block_index: int
+    status: str
+    counts: dict[str, int]
+
+
+def attribute(blocks: list[Block], rows: list[tuple[str, str, str]], low_conf_ratio: float = 0.4) -> list[BlockStatus]:
+    """Attribute diff rows (aligned to the target instruction sequence, in order) to
+    blocks and reduce each block's markers to a status. `>` (candidate-only) rows do
+    not advance the target cursor; a block dominated by `<`/`>` is low_confidence."""
+    if not blocks:
+        return []
+    starts = [b.start for b in blocks]
+
+    def block_of(idx: int) -> Block:
+        pos = bisect.bisect_right(starts, idx) - 1
+        return blocks[pos if pos >= 0 else 0]
+
+    counts: dict[int, Counter] = {b.index: Counter() for b in blocks}
+    touched: dict[int, int] = {b.index: 0 for b in blocks}
+    cursor = 0
+    for marker, _tgt, _cand in rows:
+        if marker == ">":
+            bi = block_of(cursor).index
+            counts[bi]["extra"] += 1
+            touched[bi] += 1
+            continue
+        bi = block_of(cursor).index
+        counts[bi][marker] += 1
+        touched[bi] += 1
+        cursor += 1
+
+    result: list[BlockStatus] = []
+    for b in blocks:
+        c = counts[b.index]
+        total = max(1, touched[b.index])
+        if (c.get("<", 0) + c.get("extra", 0)) / total > low_conf_ratio:
+            status = "low_confidence"
+        elif any(c.get(m, 0) for m in DIFFING_MARKERS):
+            status = "diffing"
+        elif any(c.get(m, 0) for m in BYTE_PENDING_MARKERS):
+            status = "byte_pending"
+        else:
+            status = "clean"
+        result.append(BlockStatus(block_index=b.index, status=status, counts=dict(c)))
+    return result

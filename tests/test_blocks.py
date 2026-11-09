@@ -1,4 +1,4 @@
-from decompnet.blocks import parse_asm, resolve_jump_tables, decompose, Block, JumpTable, JumpCase
+from decompnet.blocks import parse_asm, resolve_jump_tables, decompose, attribute, Block, JumpTable, JumpCase
 
 SAMPLE = """\
 func:
@@ -82,3 +82,23 @@ def test_jumptable_targets_are_leaders():
     p = parse_asm("/* 0 14a000 1 */\tnop\n/* 4 14a004 2 */\tnop\n/* 8 14a008 3 */\tnop\n")
     jt = JumpTable(addr=0x211000, symbol="jtbl_00211000", cases=[JumpCase(0, 0x14a008, 2, True)])
     assert any(b.start == 2 for b in decompose(p, [jt]))
+
+
+# --- Task 4: per-block diff attribution ---
+
+def _blocks3():
+    return [Block(0, 0, 2, None, "nop"), Block(1, 2, 4, None, "nop"), Block(2, 4, 6, None, "nop")]
+
+
+def test_clean_bytepending_diffing():
+    rows = [(" ", "a", "a"), (" ", "b", "b"),    # block0: all equal -> clean
+            ("r", "c", "c"), ("o", "d", "d"),    # block1: regalloc+reorder -> byte_pending
+            ("|", "e", "x"), (" ", "f", "f")]    # block2: a different insn -> diffing
+    st = {s.block_index: s.status for s in attribute(_blocks3(), rows)}
+    assert st == {0: "clean", 1: "byte_pending", 2: "diffing"}
+
+
+def test_extra_rows_do_not_advance_target_and_flag_low_confidence():
+    rows = [(">", "", "x"), (">", "", "y"), (">", "", "z"), (" ", "a", "a")]  # 3 extras in block0
+    st = attribute(_blocks3(), rows)
+    assert st[0].status == "low_confidence"
