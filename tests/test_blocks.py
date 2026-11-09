@@ -1,4 +1,4 @@
-from decompnet.blocks import parse_asm
+from decompnet.blocks import parse_asm, resolve_jump_tables
 
 SAMPLE = """\
 func:
@@ -16,3 +16,43 @@ def test_parse_indexes_and_labels():
     assert p.label_to_index[".L100000"] == 2          # label resolves to NEXT insn
     assert p.addr_to_index[0x100008] == 2             # full addr (2nd comment field) maps to its insn
     assert p.insns[0].addr == 0x100000
+
+
+# --- Task 2: jump-table resolution ---
+
+JT_ASM = """\
+/* 0 14a000 2c410003 */\tsltiu\t$1, $2, 0x3
+/* 4 14a004 10200004 */\tbeqz\t$1, .Lout
+/* 8 14a008 3c030021 */\tlui\t$3, %hi(jtbl_00211000)
+/* c 14a00c 24631000 */\taddiu\t$3, $3, %lo(jtbl_00211000)
+/* 10 14a010 00621021 */\taddu\t$2, $2, $3
+/* 14 14a014 00400008 */\tjr\t$2
+/* 18 14a018 00000000 */\tnop
+.Lout:
+/* 1c 14a01c 03e00008 */\tjr\t$ra
+"""
+
+
+def _reader(words):  # words at 0x211000, little-endian u32
+    blob = b"".join(w.to_bytes(4, "little") for w in words)
+    return lambda addr, n: blob[addr - 0x211000: addr - 0x211000 + n] if 0x211000 <= addr < 0x211000 + len(blob) else None
+
+
+def test_resolve_reads_N_entries_and_maps_targets():
+    p = parse_asm(JT_ASM)
+    r = _reader([0x14a018, 0x14a01c, 0x14a000, 0x99999999])  # 4 words present; bounds check says N=3
+    [jt] = resolve_jump_tables(p, r, big_endian=False, func_lo=0x14a000, func_hi=0x14a020)
+    assert jt.addr == 0x211000 and jt.symbol == "jtbl_00211000"
+    assert [c.case for c in jt.cases] == [0, 1, 2]                 # only N=3 read, not the 4th
+    assert jt.cases[0].target_addr == 0x14a018 and jt.cases[0].target_index == 6
+    assert jt.cases[2].in_func is True
+
+
+def test_reader_miss_skips_table():
+    p = parse_asm(JT_ASM)
+    assert resolve_jump_tables(p, (lambda a, n: None), False, 0x14a000, 0x14a020) == []
+
+
+def test_no_jumptable_returns_empty():
+    p = parse_asm("/* 0 14a000 03e00008 */\tjr\t$ra\n")
+    assert resolve_jump_tables(p, (lambda a, n: b"\0\0\0\0"), False, 0x14a000, 0x14a004) == []

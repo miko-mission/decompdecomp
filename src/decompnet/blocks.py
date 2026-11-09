@@ -61,3 +61,81 @@ def parse_asm(asm: str) -> ParsedAsm:
         insns.append(Insn(index=idx, addr=addr, mnemonic=mnemonic, operands=operands))
         addr_to_index[addr] = idx
     return ParsedAsm(insns=insns, label_to_index=label_to_index, addr_to_index=addr_to_index)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: jump-table resolution
+# ---------------------------------------------------------------------------
+
+_JTBL_RE = re.compile(r"jtbl_([0-9A-Fa-f]+)")
+
+
+@dataclass
+class JumpCase:
+    case: int
+    target_addr: int
+    target_index: Optional[int]
+    in_func: bool
+
+
+@dataclass
+class JumpTable:
+    addr: int
+    symbol: str
+    cases: list[JumpCase]
+
+
+def _case_count_before(parsed: ParsedAsm, ref_index: int) -> Optional[int]:
+    """The N from the nearest `sltiu _, _, <imm>` bounds check at or before ref_index."""
+    for j in range(ref_index, -1, -1):
+        insn = parsed.insns[j]
+        if insn.mnemonic == "sltiu":
+            last = insn.operands.split(",")[-1].strip()
+            try:
+                return int(last, 0)
+            except ValueError:
+                return None
+    return None
+
+
+def resolve_jump_tables(
+    parsed: ParsedAsm,
+    reader: Callable[[int, int], Optional[bytes]],
+    big_endian: bool,
+    func_lo: int,
+    func_hi: int,
+) -> list[JumpTable]:
+    """Resolve each `jtbl_<hex>` referenced in the asm by reading its rodata words
+    (bounded by the dispatch's sltiu case count) through `reader(addr, n)`."""
+    byteorder = "big" if big_endian else "little"
+    refs: dict[str, tuple[int, int]] = {}  # symbol -> (table_addr, first_ref_insn_index)
+    for insn in parsed.insns:
+        for m in _JTBL_RE.finditer(insn.operands):
+            sym = "jtbl_" + m.group(1)
+            if sym not in refs:
+                refs[sym] = (int(m.group(1), 16), insn.index)
+
+    tables: list[JumpTable] = []
+    for sym, (addr, ref_index) in refs.items():
+        n = _case_count_before(parsed, ref_index)
+        if not n or n <= 0:
+            continue
+        cases: list[JumpCase] = []
+        ok = True
+        for k in range(n):
+            b = reader(addr + 4 * k, 4)
+            if b is None or len(b) < 4:
+                ok = False
+                break
+            target = int.from_bytes(b[:4], byteorder)
+            cases.append(
+                JumpCase(
+                    case=k,
+                    target_addr=target,
+                    target_index=parsed.addr_to_index.get(target),
+                    in_func=func_lo <= target < func_hi,
+                )
+            )
+        if ok:
+            tables.append(JumpTable(addr=addr, symbol=sym, cases=cases))
+    return tables
