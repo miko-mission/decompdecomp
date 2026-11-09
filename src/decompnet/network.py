@@ -604,7 +604,7 @@ class Network:
     def _asm_text(self, fn, proj) -> str:
         return fn["asm"]
 
-    def _extra_brief(self, fn, proj) -> list[str]:
+    def _extra_brief(self, fn, proj, agent=None) -> list[str]:
         return []
 
     # ---------------------------------------------------------------- projects
@@ -1085,7 +1085,7 @@ class Network:
             ahead += (f" (first {ASM_BRIEF_LINES} of {atotal} lines \u2014 it is large; page the rest with "
                       f'read_asm("{fn["name"]}", start={ASM_BRIEF_LINES}), advancing start until it says end)')
         lines += ["", ahead, "```asm", apage, "```"]
-        lines += self._extra_brief(fn, proj)
+        lines += self._extra_brief(fn, proj, agent)
         if fn["status"] != "matched":
             if fn["best_source"]:
                 dpage, dtotal, dnext = scoring.asm_page(fn["best_source"].strip(), 0, ASM_BRIEF_LINES)

@@ -16,6 +16,7 @@ import struct
 import threading
 
 from ... import arch, classes, seeds, similarity
+from ...blocks import attribute, decompose, parse_asm, resolve_jump_tables
 from ...network import NetworkError
 from ...project import compiler_for
 from ...rom import match
@@ -400,7 +401,7 @@ class BriefMixin:
         debug = json.loads(fn["meta"] or "{}").get("debug") if "meta" in fn.keys() else None
         return self.console(proj).debug_brief(debug) if debug else []
 
-    def _extra_brief(self, fn, proj) -> list[str]:
+    def _extra_brief(self, fn, proj, agent=None) -> list[str]:
         if not self.is_rom(proj):
             return []
         self.warm_briefs(proj)
@@ -445,7 +446,39 @@ class BriefMixin:
                           "```c", src["matched_source"].strip(), "```"]
         lines += ["", "Names: use the names shown here (or rename_symbol to give an address a real name). "
                       "Your code is linked at this function's address and must reproduce the ROM bytes exactly."]
+        lines += self._blocks_brief(fn, proj, agent)
         return lines
+
+    def _blocks_brief(self, fn, proj, agent=None) -> list[str]:
+        """Read-only decomposition view: basic blocks, resolved jump tables, and
+        (when this agent has a stored diff) each block's match status. Never raises
+        into a brief."""
+        try:
+            if not self.is_rom(proj):
+                return []
+            if not (fn["asm"] or "").strip():
+                return []
+            parsed = parse_asm(self._asm_text(fn, proj))
+            if not parsed.insns:
+                return []
+            tables = resolve_jump_tables(parsed, self.reader(proj), bool(proj["big_endian"]),
+                                         fn["vram"], fn["vram"] + (fn["size"] or 0))
+            blocks = decompose(parsed, tables)
+            statuses: dict[int, str] = {}
+            if agent is not None:
+                kept = self._last_diffs.get((agent.id, fn["id"]))
+                if kept:
+                    statuses = {s.block_index: s.status for s in attribute(blocks, kept[0])}
+            lines = ["", "### Blocks"]
+            for b in blocks:
+                lbl = f" {b.label}" if b.label else ""
+                tag = f" — {statuses[b.index]}" if b.index in statuses else ""
+                lines.append(f"block {b.index} [{b.start}-{b.end}){lbl}{tag}")
+            for jt in tables:
+                lines.append(f"{jt.symbol}: " + ", ".join(f"{c.case}->.L{c.target_addr:08X}" for c in jt.cases))
+            return lines
+        except Exception:
+            return []
 
     def _rom_ops(self, proj) -> dict[tuple[int, int], list[str]]:
         """(vram, size) -> mnemonics of every function, cached until the game's layout changes (renames keep

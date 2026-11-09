@@ -354,3 +354,20 @@ def test_set_compiler_ranges_records_a_narrow_event(net, monkeypatch):  # noqa: 
     ev = net.store.all("SELECT detail FROM events WHERE project_id=? AND id>? AND kind='narrow'", pid, before)
     assert ev, "no narrow event recorded"
     assert m["name"] in ev[0]["detail"], "carved function not named in the narrow event"
+
+
+# --- Chunked decomposition Increment 1: read-only Blocks section ---
+
+def test_brief_has_blocks_section(net):
+    agent, _ = net.local_agent("blocks_tester")
+    # a candidate that compiles/links but does not match -> a non-clean diff
+    net.compile_and_diff(agent, "func_80000A0C", "void func_80000A0C(s32 p) { mystery(p); }", "demo-quest-64")
+    brief = net.get_function("func_80000A0C", "demo-quest-64", agent)
+    assert "### Blocks" in brief
+    assert "block 0" in brief
+    assert any(tok in brief for tok in ("diffing", "byte_pending", "low_confidence"))
+
+
+def test_blocks_section_absent_without_asm(net):
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", "demo-quest-64")
+    assert net._blocks_brief({"asm": "", "vram": 0, "size": 0, "id": -1}, proj, None) == []
