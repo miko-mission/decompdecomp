@@ -102,3 +102,14 @@ def test_extra_rows_do_not_advance_target_and_flag_low_confidence():
     rows = [(">", "", "x"), (">", "", "y"), (">", "", "z"), (" ", "a", "a")]  # 3 extras in block0
     st = attribute(_blocks3(), rows)
     assert st[0].status == "low_confidence"
+
+
+def test_reorder_rewritten_insertion_does_not_desync():
+    # scoring.diff's reorder pass rewrites an inserted (candidate-only) row to marker "o"
+    # with an EMPTY target. It must be treated as candidate-only (no cursor advance), or it
+    # desyncs attribution of every later row and mislabels block0 as byte_pending.
+    rows = [(" ", "a", "a"), ("o", "", "x"), (" ", "b", "b"),  # block0 [0,2): equal, inserted-o, equal
+            (" ", "c", "c"), (" ", "d", "d"),                   # block1 [2,4): equal, equal
+            (" ", "e", "e"), (" ", "f", "f")]                   # block2 [4,6): equal, equal
+    st = {s.block_index: s.status for s in attribute(_blocks3(), rows)}
+    assert st == {0: "clean", 1: "clean", 2: "clean"}

@@ -221,8 +221,10 @@ class BlockStatus:
 
 def attribute(blocks: list[Block], rows: list[tuple[str, str, str]], low_conf_ratio: float = 0.4) -> list[BlockStatus]:
     """Attribute diff rows (aligned to the target instruction sequence, in order) to
-    blocks and reduce each block's markers to a status. `>` (candidate-only) rows do
-    not advance the target cursor; a block dominated by `<`/`>` is low_confidence."""
+    blocks and reduce each block's markers to a status. A row with an EMPTY target is
+    candidate-only (a `>` insertion, or a reorder-rewritten insertion that scoring.diff
+    re-marks `o` with no target) and must not advance the target cursor; a block
+    dominated by `<`/empty-target rows is low_confidence."""
     if not blocks:
         return []
     starts = [b.start for b in blocks]
@@ -235,7 +237,7 @@ def attribute(blocks: list[Block], rows: list[tuple[str, str, str]], low_conf_ra
     touched: dict[int, int] = {b.index: 0 for b in blocks}
     cursor = 0
     for marker, _tgt, _cand in rows:
-        if marker == ">":
+        if _tgt == "":  # candidate-only: no target instruction here, do not advance
             bi = block_of(cursor).index
             counts[bi]["extra"] += 1
             touched[bi] += 1
