@@ -67,10 +67,12 @@ class WindowsPC(Console):
     arch = "x86"
     mode = PROJECT
     layout = "Ghidra + objdiff"
-    compilers = tuple(Compiler(v, MSVC_NAMES.get(v.removeprefix("MSVC/"),
-                                                 f"Visual C++ {v.removeprefix('MSVC/').replace('SP', ' SP')}"),
-                               target="x64" if v.endswith(X64_SUFFIX) else "x86")
-                      for v in MSVC_VERSIONS)
+    compilers = (*(Compiler(v, MSVC_NAMES.get(v.removeprefix("MSVC/"),
+                                              f"Visual C++ {v.removeprefix('MSVC/').replace('SP', ' SP')}"),
+                            target="x64" if v.endswith(X64_SUFFIX) else "x86")
+                   for v in MSVC_VERSIONS),
+                 # GameMaker: Studio YYC games compile their game code with Clang (the runner stays Visual C++)
+                 Compiler("clang/3.5.0", "Clang 3.5.0 (GameMaker YYC)", target="x86"))
     packs = (("msvc", "Visual C++ 6.0, 7.0 and 7.1, the compilers of PC games (proprietary)"),
              ("msvc2005", "Visual C++ 2005, 2008 and 2010, the compilers of newer PC games (proprietary, 600 MB)"),
              ("msvc2015", "Visual C++ 2017, 32- and 64-bit, with its Windows 10 SDK (proprietary, 220 MB; runs "
@@ -351,7 +353,9 @@ class WindowsPC(Console):
         if "version" not in manifest or not scratch.compilers_file(fp.root, manifest["version"]).exists():
             return None
         own = scratch.file_compilers(fp.root, manifest["version"]).get(source)
-        return f"MSVC/{own}" if own else manifest.get("compiler", f"MSVC/{scratch.MSVC_DEFAULT}")
+        if not own:
+            return manifest.get("compiler", f"MSVC/{scratch.MSVC_DEFAULT}")
+        return own if "/" in own else f"MSVC/{own}"  # a family/version id (clang/3.5.0) as-is; a bare version gets MSVC/
 
     def set_file_compiler(self, fp, source: str, compiler: str) -> str:
         from . import scratch

@@ -222,6 +222,20 @@ def test_configure_routes_clang_files_to_clang_and_msvc_files_to_cl(tmp_path, mo
     assert any(a.startswith("/Fo") for a in runner) and "-target" not in runner, runner  # still MSVC
 
 
+def test_clang_compiler_is_offered_and_round_trips_without_an_msvc_prefix(tmp_path):
+    """clang/3.5.0 (a family/version id, like MSVC/7.1) is offered to a 32-bit game and assigned per file: file_compiler
+    returns it unchanged, not "MSVC/clang/3.5.0"; unassigned files still fall back to the project's Visual C++."""
+    version = "TEST"
+    (tmp_path / "config" / version).mkdir(parents=True)
+    scratch_pe.set_file_compiler(tmp_path, version, "src/auto/game.cpp", "clang/3.5.0", default="MSVC/6.0")
+    assert scratch_pe.file_compilers(tmp_path, version) == {"src/auto/game.cpp": "clang/3.5.0"}
+    pc = consoles.get("pc")
+    fp = type("FP", (), {"root": tmp_path, "manifest": {"version": version, "compiler": "MSVC/6.0"}})()
+    assert pc.file_compiler(fp, "src/auto/game.cpp") == "clang/3.5.0"
+    assert pc.file_compiler(fp, "src/auto/runner.cpp") == "MSVC/6.0"  # unassigned → the project's own
+    assert "clang/3.5.0" in [c.id for c in pc.project_compilers(fp)]  # offered to this x86 game
+
+
 def test_a_32_bit_games_project_is_offered_32_bit_compilers_only(tmp_path, monkeypatch):
     """The 64-bit compiler (MSVC/14.16-x64) was offered to every PC project, in Settings and to try_compiler "all":
     a 32-bit game's files can't match with it. A project's target is its program's machine. The import's own list

@@ -1175,6 +1175,7 @@ license = "NCSA"  # LLVM 3.5.0: University of Illinois/NCSA (public; before LLVM
 source = "LLVM 3.5.0 release (releases.llvm.org/3.5.0)"
 description = "Clang/LLVM 3.5.0, the C compiler of GameMaker: Studio YYC Windows games. A cross-compiler: `-target i686-pc-win32` makes 32-bit Windows (MSVC-ABI) objects on any host, so it needs no wine. In a YYC game the game's own code is Clang's; the runner stays Visual C++."
 cc = ["{tc}/bin/clang++", "-c"]
+binary_name = "clang++"  # toolchains.binary(): <pack>/bin/clang++, the compiler configure.py gets as --clang
 [["clang-3.5.0".parts]]
 url = "https://releases.llvm.org/3.5.0/clang+llvm-3.5.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz"
 sha256 = "b9b420b93d7681bb2b809c3271ebdf4389c9b7ca35a781c7189d07d483d8f201"

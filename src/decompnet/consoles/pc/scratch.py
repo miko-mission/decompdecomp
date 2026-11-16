@@ -2583,6 +2583,8 @@ def tool_args(kit_ids=()) -> list[str]:
     if toolchains.get("wibo").supported and sys.platform != "win32":
         toolchains.ensure("wibo", log=lambda *_: None)
         args += ["--wibo", str(toolchains.binary("wibo"))]
+    if toolchains.installed("clang-3.5.0") is not None:  # GameMaker YYC games: the Clang that compiles the game code
+        args += ["--clang", str(toolchains.binary("clang-3.5.0"))]
     return [*args, *own_compiler_args(kits.compilers(kit_ids))]
 
 
