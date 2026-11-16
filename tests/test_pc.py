@@ -179,6 +179,49 @@ def test_compile_py_clang_style_builds_a_native_dash_i_dash_o_command(tmp_path, 
     assert "Z:" not in "".join(args)  # native paths, not wine's Z:\\
 
 
+def test_configure_routes_clang_files_to_clang_and_msvc_files_to_cl(tmp_path, monkeypatch):
+    """A mixed project (a GameMaker YYC game: MSVC runner files + Clang game files): file_compilers.json tags a file
+    'clang/3.5.0', and configure.py builds it with the clang rule (--style clang, the YYC flags, -o), natively, while
+    the rest still build with cl.exe (/Fo, CL_FLAGS). Each fake compiler records its argv beside its object."""
+    root = tmp_path / "proj"
+    shutil.copytree(Path(scratch_pe.__file__).with_name("project_template") / "tools", root / "tools")
+    (root / "tools/names.py").write_text("import sys\nfrom pathlib import Path\n"
+                                         "assert Path(sys.argv[2]).exists()\n")
+    for unit in ("runner", "game"):
+        (root / f"src/auto/{unit}.cpp").parent.mkdir(parents=True, exist_ok=True)
+        (root / f"src/auto/{unit}.cpp").write_text("int f(void) { return 1; }\n")
+    config = root / "config/TEST/functions.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"exe": "orig/test.exe", "units": {"runner": {}, "game": {}}}))
+    config.with_name("file_compilers.json").write_text(json.dumps({"src/auto/game.cpp": "clang/3.5.0"}))
+    (root / "include").mkdir()
+    msvc = tmp_path / "msvc"
+    (msvc / "6.0/Bin").mkdir(parents=True)
+    (msvc / "6.0/Include").mkdir()
+    (msvc / "6.0/Bin/CL.EXE").write_text(
+        "#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\n"
+        "out = next(a[3:] for a in sys.argv if a.startswith('/Fo'))\n"
+        "Path(out).parent.mkdir(parents=True, exist_ok=True)\n"
+        "Path(out + '.args').write_text('\\n'.join(sys.argv[1:]))\nPath(out).write_text('object')\n")
+    (msvc / "6.0/Bin/CL.EXE").chmod(0o755)
+    clang = tmp_path / "clang++"
+    clang.write_text("#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\n"
+                     "out = sys.argv[sys.argv.index('-o') + 1]\n"
+                     "Path(out).parent.mkdir(parents=True, exist_ok=True)\n"
+                     "Path(out + '.args').write_text('\\n'.join(sys.argv[1:]))\nPath(out).write_text('object')\n")
+    clang.chmod(0o755)
+    subprocess.run([sys.executable, str(root / "tools/configure.py"), "TEST", "--msvc", str(msvc), "--clang",
+                    str(clang)], check=True, capture_output=True, timeout=30)
+    project = ForkProject(root)
+    ok, output = project.run(["ninja", "all_source"], log=lambda _: None, timeout=60)
+    assert ok, output
+    game = (root / "build/TEST/src/auto/game.obj.args").read_text().splitlines()
+    runner = (root / "build/TEST/src/auto/runner.obj.args").read_text().splitlines()
+    assert "-target" in game and "i686-pc-win32" in game and "-O3" in game and "-o" in game
+    assert not any(a.startswith("/Fo") for a in game), game  # clang, not cl.exe
+    assert any(a.startswith("/Fo") for a in runner) and "-target" not in runner, runner  # still MSVC
+
+
 def test_a_32_bit_games_project_is_offered_32_bit_compilers_only(tmp_path, monkeypatch):
     """The 64-bit compiler (MSVC/14.16-x64) was offered to every PC project, in Settings and to try_compiler "all":
     a 32-bit game's files can't match with it. A project's target is its program's machine. The import's own list

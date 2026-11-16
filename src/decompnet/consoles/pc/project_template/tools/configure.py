@@ -28,6 +28,12 @@ import ninja_syntax
 # Settings (decompdecomp wrote these for this game; change them if the game was built differently)
 MSVC_VERSION = "6.0"  # every file's, unless config/<version>/file_compilers.json names another for it
 CL_FLAGS = ["/nologo", "/c", "/O2", "/W3", "/GX"]  # /GX: C++ exceptions, as games of the time were built
+# GameMaker YYC games: the game's own code is compiled by Clang (a native cross-compiler to i686-pc-win32, so no
+# wine), the runner by Visual C++. A file whose file_compilers.json id is "clang/..." builds with Clang (--clang's
+# exe) and these flags (GameMaker's YYC invocation: -fms-compatibility makes the MSVC-ABI objects the runner links).
+CLANG_FLAGS = ["-c", "-DYYLLVM=1", "-D_USING_V110_SDK71_", "-D_CRT_SECURE_NO_WARNINGS",
+               "-Wno-tautological-pointer-compare", "-Wno-parentheses-equality", "-Wno-deprecated-writable-strings",
+               "-target", "i686-pc-win32", "-fms-compatibility", "-fms-extensions", "-O3"]
 # Link-time code generation (games built with /GL and /LTCG, many Xbox games): a unit whose driver in harness/ defines
 # HarnessEntry compiles with CL_FLAGS plus /GL and links in harness mode (tools/ltcg.py, run through wine); the rest
 # compile with CL_FLAGS alone.
@@ -44,6 +50,8 @@ parser.add_argument("--wibo", default="", help="runs the Windows compilers on Li
 parser.add_argument("--own", default=[], action="append",
                     help="a compiler of the user's own (a kit: decompdecomp's kits/): VERSION=RUNNER,CL[,INCLUDE...], "
                          "RUNNER wibo, wine or none")
+parser.add_argument("--clang", default="", help="the Clang cross-compiler for GameMaker YYC game code: "
+                    "EXE[,INCLUDE...] (native, no wine); files file_compilers.json tags clang/... build with it")
 parser.add_argument("--facts", action="store_true", help="only bring build/VERSION/configure.facts up to date (the "
                                                          "build runs this, see facts())")
 args = parser.parse_args()
@@ -57,6 +65,7 @@ VERSION = args.version
 # the user's own compilers by version: [runner, compiler, header folders...] (decompdecomp names those its kits have;
 # a version no --own names is in the --msvc folders)
 OWN = {own.split("=", 1)[0]: own.split("=", 1)[1].split(",") for own in args.own}
+CLANG = args.clang.split(",") if args.clang else []  # [exe, header folder...]: GameMaker YYC games' Clang
 CONFIG = Path("config") / VERSION / "functions.json"
 FILE_COMPILERS = CONFIG.parent / "file_compilers.json"  # {"src/auto/text_00401000.cpp": "7.1"}: files built with another
 FILE_FLAGS = CONFIG.parent / "file_flags.json"  # {"src/auto/text_00401000.cpp": ["/Oy-"]}: files built with more flags
@@ -94,6 +103,20 @@ def msvc(version: str) -> tuple[str, list[str]]:
         sys.exit(f"configure: Visual C++ {version}'s headers aren't where {more} says ({missing[0]}): install it again "
                  "in decompdecomp's Compilers & tools")
     return str(cl), [str(home / "Include"), *extra]
+
+
+def is_clang(version: str) -> bool:
+    """Whether a file is compiled by Clang, not Visual C++: its file_compilers.json id is "clang/..." (GameMaker YYC
+    game code). The runner and the rest of a YYC game are Visual C++ all the same."""
+    return version.startswith("clang")
+
+
+def clang() -> tuple[str, list[str]]:
+    """The Clang cross-compiler and its header folders (--clang EXE[,INCLUDE...])."""
+    if not CLANG:
+        sys.exit("configure: a file builds with Clang (file_compilers.json names clang/...), but configure.py was "
+                 "given no --clang")
+    return CLANG[0], CLANG[1:]
 
 
 def pack_of(version: str) -> Path | None:
@@ -174,6 +197,9 @@ def main() -> None:
         # $runner: what runs the file's compiler (wibo, wine or nothing: runner())
         n.rule("cl", q(compiler).replace("$", "$$") + " $runner --compiler $cl $includes --output $out "
                "--source $in -- " + q(CL_FLAGS).replace("$", "$$") + " $cflags")
+        # GameMaker YYC game code: Clang, run natively (no $runner, no wine), with --style clang (compile.py's -I/-o)
+        n.rule("clang", q(compiler).replace("$", "$$") + " --compiler $cl $includes --style clang --output $out "
+               "--source $in -- " + q(CLANG_FLAGS).replace("$", "$$") + " $cflags")
         n.rule("configure", f"{PY} tools/configure.py " + q(sys.argv[1:]).replace("$", "$$"), generator=True)
         n.rule("facts", f"{PY} tools/configure.py " + q([*sys.argv[1:], "--facts"]).replace("$", "$$"), restat=True,
                description="configure: which files there are")
@@ -201,12 +227,20 @@ def main() -> None:
             obj = (BUILD / src.with_suffix(".obj")).as_posix()
             src_posix = src.as_posix()
             version = versions.get(src_posix, MSVC_VERSION)
-            cl, includes = msvc(version)
-            n.build(obj, "cl", src_posix, implicit=[*headers, CONFIG.as_posix(), "tools/compile.py", "tools/names.py"],
-                    variables={"cl": q([cl]).replace("$", "$$"),
-                               "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
-                               "runner": q(runner(version)).replace("$", "$$"),
-                               "cflags": q(more.get(src_posix, [])).replace("$", "$$")})
+            implicit = [*headers, CONFIG.as_posix(), "tools/compile.py", "tools/names.py"]
+            if is_clang(version):  # GameMaker YYC game code: Clang, native (no wine), -I/-o and its own flags
+                cc, includes = clang()
+                n.build(obj, "clang", src_posix, implicit=implicit,
+                        variables={"cl": q([cc]).replace("$", "$$"),
+                                   "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
+                                   "cflags": q(more.get(src_posix, [])).replace("$", "$$")})
+            else:
+                cl, includes = msvc(version)
+                n.build(obj, "cl", src_posix, implicit=implicit,
+                        variables={"cl": q([cl]).replace("$", "$$"),
+                                   "includes": q([a for d in includes for a in ("--include", d)]).replace("$", "$$"),
+                                   "runner": q(runner(version)).replace("$", "$$"),
+                                   "cflags": q(more.get(src_posix, [])).replace("$", "$$")})
             objs.append(obj)
         n.build("all_source", "phony", objs)
         n.build("prepare", "phony", [*targets, *objs])
