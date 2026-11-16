@@ -143,6 +143,42 @@ def test_generated_pc_builds_quote_paths_and_only_process_successful_objects(tmp
     assert not ok and "Visual C++ 9.9 isn't in" in output, output
 
 
+def test_compile_py_clang_style_builds_a_native_dash_i_dash_o_command(tmp_path, monkeypatch):
+    """GameMaker YYC games are compiled by Clang, a native cross-compiler: `compile.py --style clang` runs it
+    directly (no wine, no wibo), with -I/-o and plain paths, not cl.exe's /I and /Fo with wine's Z:\\ paths."""
+    tools = Path(scratch_pe.__file__).with_name("project_template") / "tools"
+    (tmp_path / "tools").mkdir()
+    shutil.copy(tools / "compile.py", tmp_path / "tools/compile.py")
+    (tmp_path / "tools/names.py").write_text('import sys\nfrom pathlib import Path\n'
+                                             'assert Path(sys.argv[2]).read_text() == "object"\n')
+    record = tmp_path / "args.txt"
+    fake = tmp_path / "clang++"
+    fake.write_text('#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\n'
+                    'Path(os.environ["REC"]).write_text("\\n".join(sys.argv[1:]))\n'
+                    'out = sys.argv[sys.argv.index("-o") + 1]\n'
+                    'Path(out).parent.mkdir(parents=True, exist_ok=True)\nPath(out).write_text("object")\n')
+    fake.chmod(0o755)
+    src = tmp_path / "s.cpp"
+    src.write_text("int f(void) { return 1; }\n")
+    inc = tmp_path / "gml include"
+    inc.mkdir()
+    out = tmp_path / "o.obj"
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("REC", str(record))
+    r = subprocess.run([sys.executable, str(tmp_path / "tools/compile.py"), "--style", "clang",
+                        "--compiler", str(fake), "--include", str(inc), "--config", str(cfg),
+                        "--output", str(out), "--source", str(src), "--",
+                        "-c", "-DYYLLVM=1", "-target", "i686-pc-win32", "-fms-compatibility", "-O3"],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    args = record.read_text().splitlines()
+    assert ["-c", "-DYYLLVM=1", "-target", "i686-pc-win32", "-fms-compatibility", "-O3"] == args[:6]  # flags kept, in order
+    assert f"-I{inc}" in args and "-o" in args and str(out) in args and str(src) in args
+    assert not any(a.startswith("/Fo") or a.startswith("/I") for a in args), args  # not cl.exe syntax
+    assert "Z:" not in "".join(args)  # native paths, not wine's Z:\\
+
+
 def test_a_32_bit_games_project_is_offered_32_bit_compilers_only(tmp_path, monkeypatch):
     """The 64-bit compiler (MSVC/14.16-x64) was offered to every PC project, in Settings and to try_compiler "all":
     a 32-bit game's files can't match with it. A project's target is its program's machine. The import's own list

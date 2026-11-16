@@ -111,6 +111,9 @@ def main() -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--wrapper", default="")  # wibo
     parser.add_argument("--wine", action="store_true")  # through wine: Visual C++ 2015+ (configure.py's WINE_FROM)
+    # cl.exe syntax (/I, /Fo, run through wine/wibo) or clang's (-I, -o, native): GameMaker YYC games are compiled
+    # by Clang, a cross-compiler that makes win32 objects natively (-target i686-pc-win32), so without wine
+    parser.add_argument("--style", default="cl", choices=("cl", "clang"))
     parser.add_argument("--output", required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("flags", nargs=argparse.REMAINDER)
@@ -122,9 +125,14 @@ def main() -> int:
         wine, env = wine_setup()
         keep_wine_server(wine, env)
         path = windows_path
-    command = ([wine] if wine else [args.wrapper] if args.wrapper else []) + [
-        args.compiler, *flags, f"/I{path('include')}", *(f"/I{path(d)}" for d in args.include),
-        f"/Fo{path(args.output)}", path(args.source)]
+    if args.style == "clang":
+        # clang runs natively (no wine, no path mangling): GNU-style -I and -o, not cl.exe's /I and /Fo
+        command = [args.compiler, *flags, "-Iinclude", *(f"-I{d}" for d in args.include), "-o", args.output,
+                   args.source]
+    else:
+        command = ([wine] if wine else [args.wrapper] if args.wrapper else []) + [
+            args.compiler, *flags, f"/I{path('include')}", *(f"/I{path(d)}" for d in args.include),
+            f"/Fo{path(args.output)}", path(args.source)]
     extra = _dll_dirs(args.compiler)
     if extra:
         current = env if env is not None else dict(os.environ)
