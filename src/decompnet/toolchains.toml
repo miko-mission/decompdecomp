@@ -1166,6 +1166,27 @@ subdir = "tools_toolchain_vs2017bt_1416-d3cdb9a6cb3d92f6081290849f4386a9ff2ce30a
 keep = { "VC/Tools/MSVC/14.16.27023/bin/Hostx86/x64" = "Bin", "VC/Tools/MSVC/14.16.27023/include" = "Include", "VC/Tools/MSVC/14.16.27023/bin/Hostx86/x86/mspdb140.dll" = "Bin/mspdb140.dll", "VC/Tools/MSVC/14.16.27023/bin/Hostx86/x86/mspdbcore.dll" = "Bin/mspdbcore.dll", "VC/Tools/MSVC/14.16.27023/bin/Hostx86/x86/msobj140.dll" = "Bin/msobj140.dll" }
 into = "14.16-x64"
 
+["clang-3.5.0"]
+name = "Clang 3.5.0 (GameMaker YYC)"
+kind = "compiler-pack"
+platform = "PC"
+arch = "x86"
+license = "NCSA"  # LLVM 3.5.0: University of Illinois/NCSA (public; before LLVM's Apache-2.0 relicense)
+source = "LLVM 3.5.0 release (releases.llvm.org/3.5.0)"
+description = "Clang/LLVM 3.5.0, the C compiler of GameMaker: Studio YYC Windows games. A cross-compiler: `-target i686-pc-win32` makes 32-bit Windows (MSVC-ABI) objects on any host, so it needs no wine. In a YYC game the game's own code is Clang's; the runner stays Visual C++."
+cc = ["{tc}/bin/clang++", "-c"]
+[["clang-3.5.0".parts]]
+url = "https://releases.llvm.org/3.5.0/clang+llvm-3.5.0-x86_64-linux-gnu-ubuntu-14.04.tar.xz"
+sha256 = "b9b420b93d7681bb2b809c3271ebdf4389c9b7ca35a781c7189d07d483d8f201"
+subdir = "clang+llvm-3.5.0-x86_64-linux-gnu"
+platforms = ["linux-x86_64"]  # the .tar.xz is xz, which Windows unpacks, so Windows runs this build under WSL (via_wsl)
+[["clang-3.5.0".parts]]
+url = "https://releases.llvm.org/3.5.0/clang+llvm-3.5.0-macosx-apple-darwin.tar.xz"
+sha256 = "d3ea3181ec599b626c63f7552c92b67f5f4cc520c7dfa72a4a5017a7a69c76c3"
+subdir = "clang+llvm-3.5.0-macosx-apple-darwin"
+platforms = ["macos-x86_64", "macos-arm64"]
+rosetta = true  # the macOS build is x86_64 (2014); Apple Silicon runs it under Rosetta
+
 [sjiswrap]
 name = "sjiswrap"
 kind = "tool"

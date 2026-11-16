@@ -48,6 +48,18 @@ def tc_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_clang_3_5_0_is_a_pinned_pc_cross_compiler():
+    """GameMaker YYC games are compiled by Clang 3.5.0, a public LLVM release (not proprietary): a native
+    cross-compiler, so no wine. One pinned build per host (linux + macOS); Windows runs the linux build via WSL."""
+    tc = toolchains.registry()["clang-3.5.0"]
+    assert tc.kind == "compiler-pack" and tc.platform == "PC"
+    assert not tc.proprietary and tc.license and tc.source  # public LLVM, pinned against a hash
+    assert not tc.wine  # a cross-compiler (-target i686-pc-win32): never through wine
+    plats = {p for part in tc.parts for p in part["platforms"]}
+    assert "linux-x86_64" in plats and "macos-x86_64" in plats and "windows-x86_64" not in plats
+    assert all(len(part["sha256"]) == 64 for part in tc.parts)
+
+
 def test_registry_is_pinned_and_labelled():
     reg = toolchains.registry()
     assert {"gcc-2.7.2-kmc", "ee-gcc-2.96", "ido-7.1", "m2c", "runtime-i386"} <= set(reg)
